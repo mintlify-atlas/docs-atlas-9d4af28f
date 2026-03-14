@@ -1,0 +1,454 @@
+---
+title: Automatic Protections
+description: Built-in safeguards to prevent configuration errors and access loss
+---
+
+## Overview
+
+SECURE-BRANCH-lac implements multiple automatic protection mechanisms to prevent accidental lockouts, service disruptions, and data loss during configuration deployment.
+
+## Protection Summary
+
+| Protection | Detail |
+|------------|--------|
+| `GigabitEthernet0/0` | Never modified (uplink/management interface) |
+| SSH / VTY / crypto key | Never touched to preserve remote access |
+| Switches L2 | Skips `ip routing` and SVIs with IP (automatic detection) |
+| Cleanup | Only removes what the app configured; pre-existing routes and OSPF preserved |
+| Enable secret | Applied **at the end** of deployment to avoid closing active SSH session |
+
+**Source:** `README.md:130-138`
+
+---
+
+## Uplink Protection
+
+The uplink interface is **never** modified by the application to prevent loss of management access.
+
+### Protected Interface
+
+```python
+# constants.py
+UPLINK_IFACE = "GigabitEthernet0/0"
+```
+
+**Source:** `constants.py:13`
+
+<Warning>
+The uplink interface connects the switch to the router/core network. Modifying it can completely disconnect the switch from management.
+</Warning>
+
+### Implementation
+
+#### Port Cleanup Protection
+
+```python
+# core/command_builder.py
+for iface, body in re.findall(
+        r'^interface (\S+)\n((?:[ \t].+\n)*)', raw, re.MULTILINE):
+    if 'Vlan' in iface:
+        continue   # skip SVIs (handled above)
+    if UPLINK_IFACE.lower() in iface.lower():
+        continue   # NEVER touch the uplink
+    if 'switchport access vlan' in body:
+        cleanup += [f"interface {iface}", "no switchport access vlan",
+                    "no switchport mode", "exit"]
+    elif 'switchport mode trunk' in body:
+        cleanup += [f"interface {iface}", "no switchport mode trunk", "exit"]
+```
+
+**Source:** `core/command_builder.py:353-364`
+
+#### QoS Service Policy Protection
+
+```python
+# Service-policy is NEVER applied on the uplink (Gi0/0), which is protected.
+for sp in service_policies:
+    cmds += [
+        f"interface {sp['iface']}",
+        f"service-policy {sp['dir']} {sp['policy']}",
+        "exit"
+    ]
+```
+
+**Source:** `core/command_builder.py:253-259`
+
+<Info>
+The GUI prevents selecting `GigabitEthernet0/0` for VLAN assignment or QoS policies.
+</Info>
+
+---
+
+## SSH and VTY Preservation
+
+The application **never** modifies:
+- SSH server configuration
+- VTY line settings (timeout, transport, access-class)
+- Crypto key pairs (RSA keys for SSH)
+- User accounts
+
+<Tip>
+This ensures you can always reconnect to the switch even if a deployment fails mid-operation.
+</Tip>
+
+### Why This Matters
+
+```python
+# If these were touched during deployment:
+enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0  # ← Session might disconnect
+line vty 0 4
+ transport input ssh                              # ← Could lock you out
+crypto key generate rsa modulus 2048              # ← Takes 30+ seconds
+```
+
+<Warning>
+Regenerating crypto keys during an active SSH session can cause the connection to drop.
+</Warning>
+
+---
+
+## Layer 2 / Layer 3 Detection
+
+The app automatically detects switch capabilities and skips incompatible commands.
+
+### Detection Logic
+
+```python
+def detect_l3(nc) -> bool:
+    """
+    Detects if the switch has ip routing active (Layer 3) or not (Layer 2).
+
+    Strategy: executes 'show ip route connected' and searches for lines
+    beginning with 'C' (directly connected route). If found, the switch routes.
+
+    Returns
+    -------
+    bool : True = Layer 3 (ip routing active), False = Layer 2.
+    """
+    try:
+        out = nc.send_command("show ip route connected", delay_factor=2)
+        return bool(re.search(r'^C\s+', out, re.MULTILINE))
+    except Exception:
+        return False   # If it fails, assume L2 for safety
+```
+
+**Source:** `core/connector.py:50-69`
+
+### What Gets Skipped on Layer 2 Switches
+
+<Accordion title="IP Routing Commands">
+  ```python
+  if chk_intervlan and is_l3:
+      cmds += ["ip routing", "service dhcp"]
+  elif not is_l3 and log_fn:
+      log_fn("  [INFO] Switch L2 detectado → se omite 'ip routing' y SVIs con IP")
+  ```
+
+  **Source:** `core/command_builder.py:108-113`
+
+  <Info>
+    Layer 2 switches don't support `ip routing` - attempting this command would cause an error.
+  </Info>
+</Accordion>
+
+<Accordion title="DHCP Pool Configuration">
+  ```python
+  # DHCP pools (only Layer 3 switches)
+  # On Layer 2, DHCP is managed by R1 (router-on-a-stick).
+  if is_l3:
+      for pool in dhcp_pools:
+          cmds.append(f"ip dhcp excluded-address {pool['gw']}")
+          cmds += [
+              f"ip dhcp pool {pool['name']}",
+              f"network {pool['net']} {pool['mask']}",
+              f"default-router {pool['gw']}",
+              "dns-server 8.8.8.8",
+              "exit"
+          ]
+  ```
+
+  **Source:** `core/command_builder.py:118-127`
+
+  <Note>
+    In Layer 2 deployments, the upstream router handles DHCP via subinterfaces.
+  </Note>
+</Accordion>
+
+<Accordion title="SVI IP Address Assignment">
+  ```python
+  # SVIs — Switch Virtual Interfaces (only L3)
+  # The SVI is the virtual IP of the switch for that VLAN; acts as gateway.
+  # On L2 there are no SVIs with IP; the gateway is on R1.
+  if is_l3:
+      for v in vlans_data:
+          acl_name  = f"SEGURIDAD_VLAN_{v['id']}"
+          needs_acl = v['block_social'] or v['custom_acl']
+          svi_ip = svi_mask = None
+          if v['dhcp_idx'] is not None:
+              # Take gateway IP from associated DHCP pool
+              p = dhcp_pools[v['dhcp_idx']]
+              svi_ip, svi_mask = p['gw'], p['mask']
+          if svi_ip or needs_acl:
+              cmds.append(f"interface vlan {v['id']}")
+              if svi_ip:
+                  cmds += [f"ip address {svi_ip} {svi_mask}", "no shutdown"]
+              if needs_acl:
+                  cmds.append(f"ip access-group {acl_name} in")
+              cmds.append("exit")
+  ```
+
+  **Source:** `core/command_builder.py:191-207`
+
+  <Tip>
+    Layer 2 switches can still have SVIs (for ACL application), but they won't have IP addresses assigned.
+  </Tip>
+</Accordion>
+
+### Detection in Execution Flow
+
+```python
+# core/connector.py
+nc       = ConnectHandler(**make_device_params(sw))
+nc.enable()
+hostname = nc.find_prompt().replace("#", "").strip()
+is_l3    = detect_l3(nc)
+layer    = "Layer 3" if is_l3 else "Layer 2"
+if log_fn:
+    log_fn(f"  ✔ Conectado: '{hostname}'  |  {layer}")
+```
+
+**Source:** `core/connector.py:158-164`
+
+---
+
+## Cleanup Safety
+
+The cleanup process **only** removes configuration that the application created. Pre-existing configuration is preserved.
+
+### Protected Configuration Elements
+
+<Accordion title="Static Routes">
+  Only routes that match the app's `static_routes` list are removed:
+
+  ```python
+  # Static routes — ONLY the routes the app configured are deleted.
+  # Pre-existing routes (e.g., manual default route to R1) are NOT
+  # touched to protect switch connectivity.
+  for rt in static_routes:
+      rt_str = f"{rt['dest']} {rt['mask']} {rt['nexthop']}"
+      if f"ip route {rt_str}" in raw:   # verify it actually exists
+          cleanup.append(f"no ip route {rt_str}")
+  ```
+
+  **Source:** `core/command_builder.py:374-379`
+
+  <Warning>
+    Without this protection, removing all routes would disconnect the switch from the network.
+  </Warning>
+</Accordion>
+
+<Accordion title="OSPF Networks">
+  The OSPF process itself is never removed, and only app-configured networks are withdrawn:
+
+  ```python
+  # OSPF — only known network statements
+  # NEVER delete the entire OSPF process or pre-existing networks (uplinks, loopbacks).
+  # Only remove the 'network' statements that this app configured previously.
+  pid_m = re.search(r'^router ospf (\d+)', raw, re.MULTILINE)
+  if pid_m and ospf_networks:
+      pid = pid_m.group(1)
+      for n in ospf_networks:
+          net_str = f"{n['network']} {n['wildcard']} area {n['area']}"
+          if net_str in raw:
+              cleanup += [f"router ospf {pid}", f"no network {net_str}", "exit"]
+  ```
+
+  **Source:** `core/command_builder.py:382-390`
+
+  <Info>
+    This preserves OSPF adjacencies on uplink interfaces and other pre-configured networks.
+  </Info>
+</Accordion>
+
+<Accordion title="VLAN 1 (Native VLAN)">
+  VLAN 1 is never deleted as it's the native management VLAN:
+
+  ```python
+  # SVIs (interfaces VLAN)
+  # Remove IP and ACL from each SVI, except VLAN 1 (native).
+  for iface, vid, body in re.findall(
+          r'^interface (Vlan(\d+))\n((?:[ \t].+\n)*)', raw, re.MULTILINE):
+      if vid == "1":
+          continue   # VLAN 1 is the management VLAN, never touched
+  ```
+
+  **Source:** `core/command_builder.py:341-345`
+
+  ```python
+  # VLANs
+  vlan_raw = nc.send_command("show vlan brief", delay_factor=2)
+  for vid in re.findall(r'^(\d+)\s+\S+\s+active', vlan_raw, re.MULTILINE):
+      if vid != "1":
+          cleanup.append(f"no vlan {vid}")
+  ```
+
+  **Source:** `core/command_builder.py:368-371`
+</Accordion>
+
+<Accordion title="Security ACLs (App-Created Only)">
+  Only ACLs with the `SEGURIDAD_VLAN_` prefix are removed:
+
+  ```python
+  # Named security ACLs
+  # Only delete ACLs with the "SEGURIDAD_VLAN_" prefix used by this app.
+  for a in re.findall(r'^ip access-list extended (SEGURIDAD_VLAN_\S+)', raw, re.MULTILINE):
+      cleanup.append(f"no ip access-list extended {a}")
+  ```
+
+  **Source:** `core/command_builder.py:323-325`
+
+  <Tip>
+    Custom ACLs not created by the app (e.g., management ACLs) remain untouched.
+  </Tip>
+</Accordion>
+
+### What Gets Removed
+
+Cleanup **does** remove these app-created items:
+
+- All DHCP pools and exclusions
+- ACLs with prefix `SEGURIDAD_VLAN_*`
+- Service policies from all interfaces
+- All policy-maps and class-maps
+- SVI IP addresses (except VLAN 1)
+- Port assignments (access/trunk mode)
+- VLANs (except VLAN 1)
+- Static routes in the `static_routes` list
+- OSPF networks in the `ospf_networks` list
+
+---
+
+## Enable Secret Protection
+
+The `enable secret` command is applied **at the very end** of the deployment to prevent SSH session disruption.
+
+### Why It's Applied Last
+
+```python
+# Security: enable secret + login block-for + banner MOTD
+# Applied AT THE END to avoid interfering with the active SSH session
+# executing these commands (enable secret change is immediate but doesn't
+# close the session in progress).
+sec_cmds = build_security_commands(
+    enable_pw   = enable_pw,
+    attempts    = login_attempts,
+    window      = login_window,
+    block_for   = login_block_for,
+    banner_text = banner_text,
+)
+if sec_cmds:
+    if log_fn:
+        log_fn(f"  [Seguridad] {len(sec_cmds)} comandos de seguridad...")
+    cmds += sec_cmds
+```
+
+**Source:** `core/command_builder.py:262-275`
+
+<Warning>
+If `enable secret` were applied at the beginning:
+1. The command would execute immediately
+2. The current SSH session's `enable` mode might require re-authentication
+3. Subsequent commands could fail if the session drops to user mode
+
+By applying it last, all configuration commands complete successfully before the secret changes.
+</Warning>
+
+### Enable Secret Format
+
+The app uses MD5 type-5 encryption:
+
+```bash
+enable secret <password>
+```
+
+<Info>
+This produces an irreversible MD5 hash (type 5), more secure than `enable password` which uses reversible type-7 encryption.
+</Info>
+
+---
+
+## Login Block Protection
+
+The login blocking mechanism protects against brute-force attacks but won't lock out the current session:
+
+```bash
+login block-for 120 attempts 5 within 60
+login on-failure log
+```
+
+**Example:** If 5 failed login attempts occur within 60 seconds, all VTY/SSH access is blocked for 120 seconds.
+
+<Note>
+The currently authenticated SSH session that's deploying the configuration is **not** affected by this block.
+</Note>
+
+---
+
+## GRE Tunnel Source Protection
+
+GRE tunnels are configured **after** static routes to ensure the source interface can be resolved:
+
+```python
+# GRE over IPsec
+# Tunnels are configured after routes so the system can correctly
+# resolve the tunnel source interface.
+if gre_tunnels:
+    gre_cmds = build_gre_ipsec_commands(gre_tunnels)
+    if log_fn:
+        log_fn(f"  [GRE/IPsec] {len(gre_cmds)} comandos de túnel...")
+    cmds += gre_cmds
+```
+
+**Source:** `core/command_builder.py:278-284`
+
+<Tip>
+If routes aren't configured first, the tunnel source IP might not be reachable, causing tunnel establishment to fail.
+</Tip>
+
+---
+
+## Gateway IP Exclusion
+
+In DHCP pools, the gateway IP is automatically excluded to prevent conflicts:
+
+```python
+if is_l3:
+    for pool in dhcp_pools:
+        cmds.append(f"ip dhcp excluded-address {pool['gw']}")   # exclude gateway
+        cmds += [
+            f"ip dhcp pool {pool['name']}",
+            f"network {pool['net']} {pool['mask']}",
+            f"default-router {pool['gw']}",
+            "dns-server 8.8.8.8",
+            "exit"
+        ]
+```
+
+**Source:** `core/command_builder.py:118-127`
+
+<Warning>
+Without exclusion, the DHCP server could assign the gateway IP to a client, causing routing failures.
+</Warning>
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Command Generation" icon="code" href="/advanced/command-generation">
+    How IOS commands are built from configuration
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Solve common deployment issues
+  </Card>
+</CardGroup>

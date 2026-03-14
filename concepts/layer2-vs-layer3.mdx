@@ -1,0 +1,391 @@
+---
+title: 'Layer 2 vs Layer 3 Detection'
+description: 'How SECURE-BRANCH-lac automatically detects and adapts to switch capabilities'
+icon: 'layer-group'
+---
+
+## Overview
+
+Not all switches support Layer 3 routing. SECURE-BRANCH-lac automatically detects whether each switch has `ip routing` enabled and adapts the generated configuration accordingly.
+
+<Warning>
+Attempting to configure Layer 3 features (like SVIs with IP addresses or DHCP pools) on a Layer 2-only switch will cause configuration errors.
+</Warning>
+
+## Detection Mechanism
+
+### How Detection Works
+
+The detection is performed by the `detect_l3()` function in `core/connector.py`:
+
+```python
+def detect_l3(nc) -> bool:
+    """
+    Detects if the switch has ip routing active (Layer 3) or not (Layer 2).
+
+    Strategy: executes 'show ip route connected' and searches for lines
+    that begin with 'C' (directly connected route). If found, the switch routes.
+
+    Parameters
+    ----------
+    nc : Active Netmiko connection (in enable mode).
+
+    Returns
+    -------
+    bool : True = Layer 3 (ip routing active), False = Layer 2.
+    """
+    try:
+        out = nc.send_command("show ip route connected", delay_factor=2)
+        return bool(re.search(r'^C\s+', out, re.MULTILINE))
+    except Exception:
+        return False   # If it fails, assume L2 for safety
+```
+
+Source: [connector.py:50-69](file:///home/daytona/workspace/source/core/connector.py#L50-L69)
+
+<Steps>
+  <Step title="Connect to Switch">
+    Establish SSH connection via Netmiko and enter enable mode
+  </Step>
+
+  <Step title="Query Routing Table">
+    Execute `show ip route connected` to see connected routes
+  </Step>
+
+  <Step title="Search for Connected Routes">
+    Look for lines starting with `C` (indicates directly connected networks)
+  </Step>
+
+  <Step title="Return Detection Result">
+    - If `C` routes found → **Layer 3** (routing enabled)
+    - If no `C` routes or command fails → **Layer 2** (switching only)
+  </Step>
+</Steps>
+
+### Example Output
+
+<Tabs>
+  <Tab title="Layer 3 Switch">
+    **Command:** `show ip route connected`
+
+    ```
+    C    10.10.10.0/24 is directly connected, Vlan10
+    C    10.10.20.0/24 is directly connected, Vlan20
+    C    192.168.1.0/24 is directly connected, GigabitEthernet0/0
+    ```
+
+    **Detection Result:** `True` (Layer 3 capable)
+  </Tab>
+
+  <Tab title="Layer 2 Switch">
+    **Command:** `show ip route connected`
+
+    ```
+    % IP routing table does not exist
+    ```
+
+    **Detection Result:** `False` (Layer 2 only)
+  </Tab>
+</Tabs>
+
+## Behavioral Differences
+
+The detection result controls which commands are generated:
+
+### Features Only on Layer 3 Switches
+
+<CardGroup cols={2}>
+  <Card title="IP Routing" icon="route">
+    **Command:** `ip routing`
+    
+    Enables inter-VLAN routing capability
+
+    ```python
+    if chk_intervlan and is_l3:
+        cmds += ["ip routing", "service dhcp"]
+    elif not is_l3 and log_fn:
+        log_fn("[INFO] Switch L2 detected → omitting 'ip routing' and SVIs with IP")
+    ```
+
+    Source: [command_builder.py:108-113](file:///home/daytona/workspace/source/core/command_builder.py#L108-L113)
+  </Card>
+
+  <Card title="DHCP Pools" icon="network-wired">
+    **Commands:** `ip dhcp pool`, `ip dhcp excluded-address`
+    
+    Layer 2 switches cannot serve DHCP; the router (R1) handles it
+
+    ```python
+    if is_l3:
+        for pool in dhcp_pools:
+            cmds.append(f"ip dhcp excluded-address {pool['gw']}")
+            cmds += [
+                f"ip dhcp pool {pool['name']}",
+                f"network {pool['net']} {pool['mask']}",
+                f"default-router {pool['gw']}",
+                "dns-server 8.8.8.8",
+                "exit"
+            ]
+    ```
+
+    Source: [command_builder.py:115-127](file:///home/daytona/workspace/source/core/command_builder.py#L115-L127)
+  </Card>
+
+  <Card title="SVI IP Addresses" icon="address-card">
+    **Command:** `interface vlan X` → `ip address`
+    
+    SVIs (Switch Virtual Interfaces) act as VLAN gateways
+
+    ```python
+    if is_l3:
+        for v in vlans_data:
+            if v['dhcp_idx'] is not None:
+                p = dhcp_pools[v['dhcp_idx']]
+                svi_ip, svi_mask = p['gw'], p['mask']
+            if svi_ip or needs_acl:
+                cmds.append(f"interface vlan {v['id']}")
+                if svi_ip:
+                    cmds += [f"ip address {svi_ip} {svi_mask}", "no shutdown"]
+    ```
+
+    Source: [command_builder.py:188-207](file:///home/daytona/workspace/source/core/command_builder.py#L188-L207)
+  </Card>
+
+  <Card title="Static Routes & OSPF" icon="route">
+    **Commands:** `ip route`, `router ospf`
+    
+    Routing protocols require Layer 3 capability
+
+    Layer 2 switches use their default gateway for non-local traffic
+  </Card>
+</CardGroup>
+
+### Features on Both Layer 2 and Layer 3
+
+<AccordionGroup>
+  <Accordion title="VLAN Creation">
+    Both L2 and L3 switches support VLANs:
+
+    ```python
+    for v in vlans_data:
+        cmds.append(f"vlan {v['id']}")
+        if v['name']:
+            cmds.append(f"name {v['name']}")
+        cmds.append("exit")
+    ```
+
+    Source: [command_builder.py:129-135](file:///home/daytona/workspace/source/core/command_builder.py#L129-L135)
+  </Accordion>
+
+  <Accordion title="Port Assignment (Access/Trunk)">
+    Both can assign ports to VLANs and configure trunk links:
+
+    ```python
+    for v in vlans_data:
+        if v['assign_ports'] and v['ports']:
+            ports_norm = expand_ports(v['ports'])
+            # ... interface range configuration
+            if v['port_mode'] == 'trunk':
+                cmds += [
+                    "switchport trunk encapsulation dot1q",
+                    "switchport mode trunk",
+                    f"switchport trunk allowed vlan add {v['id']}",
+                    "no shutdown",
+                    "exit"
+                ]
+            else:  # access mode
+                cmds += [
+                    "switchport mode access",
+                    f"switchport access vlan {v['id']}",
+                    "spanning-tree portfast",
+                    "no shutdown",
+                    "exit"
+                ]
+    ```
+
+    Source: [command_builder.py:137-167](file:///home/daytona/workspace/source/core/command_builder.py#L137-L167)
+  </Accordion>
+
+  <Accordion title="QoS Policies">
+    Both can apply QoS policies to interfaces:
+
+    - class-map (traffic classification)
+    - policy-map (traffic actions: police, shape, priority)
+    - service-policy (apply to interfaces)
+  </Accordion>
+
+  <Accordion title="Security Features">
+    Device security works on both:
+
+    - `enable secret` (MD5 type-5 password)
+    - `login block-for` (brute-force protection)
+    - `banner motd` (login banner)
+  </Accordion>
+</AccordionGroup>
+
+## Detection in Practice
+
+The detection happens automatically during the connection phase:
+
+```python
+def run_on_switch(sw: dict, config_params: dict, do_clean: bool = False, log_fn=None) -> bool:
+    """
+    Connects to a switch and applies complete configuration.
+    """
+    try:
+        nc       = ConnectHandler(**make_device_params(sw))
+        nc.enable()
+        hostname = nc.find_prompt().replace("#", "").strip()
+        is_l3    = detect_l3(nc)  # ← DETECTION HAPPENS HERE
+        layer    = "Layer 3" if is_l3 else "Layer 2"
+        if log_fn:
+            log_fn(f"  ✔ Connected: '{hostname}'  |  {layer}")
+
+        # ... rest of configuration deployment
+        cmds = build_commands(is_l3=is_l3, log_fn=log_fn, **config_params)
+```
+
+Source: [connector.py:157-186](file:///home/daytona/workspace/source/core/connector.py#L157-L186)
+
+### Sample Log Output
+
+```
+────────────────────────────────────────────────────────
+  Sucursal: SW-CDMX  |  192.168.1.10
+────────────────────────────────────────────────────────
+  ✔ Connected: 'SW-CDMX-01'  |  Layer 3
+  [Config] Sending 47 commands...
+  [1/47] ip routing
+  [2/47] service dhcp
+  [3/47] ip dhcp excluded-address 10.10.10.1
+  ...
+```
+
+<Info>
+The detection result is also stored in `app.detected_l3` for UI feedback.
+</Info>
+
+## Common Scenarios
+
+<Tabs>
+  <Tab title="Branch Switch (L3)">
+    **Use Case:** Full-featured branch switch with routing
+
+    **Capabilities:**
+    - Inter-VLAN routing
+    - DHCP server for local VLANs
+    - Static routes and OSPF
+    - SVI IP addresses as gateways
+
+    **Configuration Generated:**
+    - `ip routing`
+    - DHCP pools
+    - SVIs with IPs
+    - Routes
+    - VLANs + ports
+    - QoS
+    - Security
+  </Tab>
+
+  <Tab title="Access Switch (L2)">
+    **Use Case:** Simple access layer switch
+
+    **Capabilities:**
+    - VLAN segmentation
+    - Port assignment (access/trunk)
+    - QoS policies
+    - Security features
+
+    **Configuration Generated:**
+    - VLANs + ports
+    - QoS
+    - Security
+    - **NO** `ip routing`, DHCP pools, or SVI IPs
+
+    **Note:** DHCP and routing handled by upstream router (R1)
+  </Tab>
+
+  <Tab title="Mixed Environment">
+    **Use Case:** Some branches have L3 switches, others L2
+
+    **Behavior:**
+    - Each switch is detected independently
+    - L3 switches get full config
+    - L2 switches get limited config
+    - Same configuration data (VLANs, QoS) is used for all
+
+    **Advantage:** Single configuration can deploy to heterogeneous infrastructure
+  </Tab>
+</Tabs>
+
+## Troubleshooting Detection
+
+<AccordionGroup>
+  <Accordion title="Detection Returns False on L3 Switch">
+    **Possible Causes:**
+    - `ip routing` not enabled in running-config
+    - No SVIs with IP addresses configured yet
+    - SSH timeout or permission issue
+
+    **Solution:**
+    - Manually verify: `show ip route connected`
+    - Enable routing: `ip routing` in global config
+    - Check user has privilege level 15
+  </Accordion>
+
+  <Accordion title="Commands Fail on L2 Switch">
+    **Symptoms:**
+    ```
+    % Invalid input detected at '^' marker.
+    ```
+
+    **Cause:** App attempted to send L3 commands (usually a detection bug)
+
+    **Solution:**
+    - Check logs for detection result
+    - Verify `show ip route connected` output manually
+    - Report bug if detection is incorrect
+  </Accordion>
+
+  <Accordion title="Detection Times Out">
+    **Symptoms:**
+    - Connection succeeds but detection hangs
+
+    **Cause:**
+    - Switch is very slow or overloaded
+    - Network latency
+
+    **Solution:**
+    - Increase `delay_factor` in `detect_l3()` function
+    - Check switch CPU usage: `show processes cpu`
+  </Accordion>
+</AccordionGroup>
+
+## Safety Mechanisms
+
+<Note>
+The app uses "safe defaults" when detection is uncertain:
+
+```python
+try:
+    out = nc.send_command("show ip route connected", delay_factor=2)
+    return bool(re.search(r'^C\s+', out, re.MULTILINE))
+except Exception:
+    return False   # If it fails, assume L2 for safety
+```
+
+**Rationale:** It's safer to omit L3 features (which can be added later) than to
+send invalid commands that could disrupt switch operation.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture Overview" icon="sitemap" href="/concepts/architecture">
+    Learn about the overall project structure
+  </Card>
+
+  <Card title="9-Tab Workflow" icon="list-check" href="/concepts/workflow">
+    Understand the step-by-step configuration process
+  </Card>
+</CardGroup>

@@ -1,0 +1,360 @@
+---
+title: QoS Configuration (MQC)
+description: Prioritize voice, video, and critical data with Modular QoS CLI
+icon: gauge-high
+---
+
+This guide covers **Tab ⑤** of the configurator: implementing QoS (Quality of Service) using Cisco's **Modular QoS CLI (MQC)** framework.
+
+## What is MQC?
+
+Modular QoS CLI is Cisco's standard for configuring QoS on IOS devices. It follows a **3-step workflow**:
+
+<Steps>
+  <Step title="1. class-map — Classify traffic">
+    Define **what** traffic to match (by DSCP, IP address, ACL, protocol, etc.)
+  </Step>
+
+  <Step title="2. policy-map — Define actions">
+    Specify **what to do** with each traffic class:
+    - **priority**: Low-latency queue (voice/video)
+    - **bandwidth**: Guarantee minimum bandwidth
+    - **police**: Rate-limit (drop excess)
+    - **shape**: Smooth bursts with buffering
+    - **set dscp**: Re-mark packets
+  </Step>
+
+  <Step title="3. service-policy — Apply to interface">
+    Attach the policy to a physical interface (input/output direction)
+  </Step>
+</Steps>
+
+---
+
+## DSCP Presets (Quick Values)
+
+The tool provides **quick-load buttons** for common DSCP values:
+
+| Preset | DSCP Value | Use Case |
+|--------|------------|----------|
+| **EF** | `ef` (46) | Voice / Real-time video |
+| **AF41** | `af41` (34) | Video conferencing |
+| **AF31** | `af31` (26) | VoIP signaling / calls |
+| **AF21** | `af21` (18) | Critical business data |
+| **AF11** | `af11` (10) | Standard data |
+| **CS3** | `cs3` (24) | Call signaling protocols |
+| **CS1** | `cs1` (8) | Scavenger (bulk downloads) |
+| **Default** | `default` (0) | Best effort |
+
+<Info>
+  Click a preset button to **auto-fill** the DSCP value in the class-map form.
+</Info>
+
+<Tip>
+  DSCP presets are defined in `constants.py:22-31`
+</Tip>
+
+---
+
+## Step 1: class-map — Classify Traffic
+
+Create classes to identify different types of network traffic.
+
+<Steps>
+  <Step title="Configure class-map parameters">
+    | Field | Options | Description |
+    |-------|---------|-------------|
+    | **Name** | e.g., `CLASE_VOZ` | Unique identifier for the class |
+    | **Type** | `match-any` / `match-all` | Logical operator for multiple criteria |
+    | **Criteria** | `dscp`, `ip dscp`, `ip precedence`, `access-group name`, `protocol` | What to match |
+    | **Value** | e.g., `ef`, `46`, `ACL_VOIP` | The value to match against |
+
+    <Accordion title="match-any vs match-all">
+      - **match-any** (OR logic): Packet matches if it satisfies **any** criterion
+      - **match-all** (AND logic): Packet must satisfy **all** criteria
+
+      Example:
+      ```ios
+      class-map match-any CLASE_VOZ
+       match dscp ef
+       match ip precedence 5
+      ```
+      This matches packets with DSCP EF **or** IP precedence 5.
+    </Accordion>
+  </Step>
+
+  <Step title="Add the class">
+    Click **"+ Agregar clase"**
+
+    **Example generated command**:
+    ```ios
+    class-map match-any CLASE_VOZ
+     match dscp ef
+     exit
+    ```
+  </Step>
+</Steps>
+
+### Example: Voice Traffic Class
+
+```ios Voice Class (Low Latency)
+class-map match-any CLASE_VOZ
+ match dscp ef
+ exit
+```
+
+### Example: Video Conferencing Class
+
+```ios Video Class (High Priority)
+class-map match-any CLASE_VIDEO
+ match dscp af41
+ exit
+```
+
+### Example: Match by ACL
+
+```ios Business Apps (by ACL)
+class-map match-any CLASE_NEGOCIO
+ match access-group name ACL_SAP
+ exit
+```
+
+---
+
+## Step 2: policy-map — Define Actions
+
+Assign actions to each traffic class.
+
+<Steps>
+  <Step title="Set policy-map name">
+    Enter a name for your policy (e.g., `POLITICA_QOS`)
+
+    <Info>
+      Default pre-filled: `POLITICA_QOS`
+    </Info>
+  </Step>
+
+  <Step title="Select class and action">
+    | Field | Description |
+    |-------|-------------|
+    | **Clase** | Select from the class-maps you created (click ↻ to refresh) |
+    | **Acción** | Choose: `priority`, `bandwidth`, `police rate`, `shape average`, `set dscp` |
+    | **Valor** | Bandwidth in bps (e.g., `1000000` for 1 Mbps) or DSCP value |
+  </Step>
+
+  <Step title="Add class→action mapping">
+    Click **"+ Agregar clase→acción"**
+
+    Repeat for each class in your policy.
+  </Step>
+</Steps>
+
+### QoS Actions Explained
+
+<Accordion title="priority — Low-latency queue (LLQ)">
+  Guarantees bandwidth and **minimal delay**. Use for voice and real-time video.
+
+  ```ios
+  policy-map POLITICA_QOS
+   class CLASE_VOZ
+    priority 1000000  ! 1 Mbps for voice
+    exit
+  ```
+
+  <Warning>
+    Total priority bandwidth across all classes **must not exceed 33%** of link capacity to prevent starvation.
+  </Warning>
+</Accordion>
+
+<Accordion title="bandwidth — Minimum guarantee">
+  Reserves bandwidth for a class but allows excess usage when available.
+
+  ```ios
+  policy-map POLITICA_QOS
+   class CLASE_NEGOCIO
+    bandwidth 5000000  ! Guarantee 5 Mbps minimum
+    exit
+  ```
+</Accordion>
+
+<Accordion title="police rate — Rate limiting">
+  **Drops** packets that exceed the specified rate.
+
+  ```ios
+  policy-map POLITICA_QOS
+   class CLASE_SCAVENGER
+    police rate 2000000 bps  ! Limit to 2 Mbps
+    exit
+  ```
+
+  <Info>
+    Use for limiting low-priority traffic (bulk downloads, updates)
+  </Info>
+</Accordion>
+
+<Accordion title="shape average — Traffic shaping">
+  **Buffers and delays** packets to smooth bursts. Slower than policing but no packet loss.
+
+  ```ios
+  policy-map POLITICA_QOS
+   class CLASE_BACKUP
+    shape average 3000000  ! Smooth to 3 Mbps
+    exit
+  ```
+</Accordion>
+
+<Accordion title="set dscp — Re-mark packets">
+  Changes the DSCP value of packets (for trust boundary enforcement).
+
+  ```ios
+  policy-map POLITICA_QOS
+   class CLASE_DATOS
+    set dscp af21  ! Re-mark to AF21
+    exit
+  ```
+</Accordion>
+
+---
+
+## Step 3: service-policy — Apply to Interface
+
+Attach the policy to a specific switch port.
+
+<Steps>
+  <Step title="Specify interface and direction">
+    | Field | Example | Description |
+    |-------|---------|-------------|
+    | **Interfaz** | `GigabitEthernet0/1` | Physical port to apply QoS |
+    | **Dirección** | `output`, `input`, `both` | Traffic direction |
+
+    <Warning>
+      **Never use `GigabitEthernet0/0`** — this is the protected uplink!
+    </Warning>
+  </Step>
+
+  <Step title="Add service-policy">
+    Click **"+ Agregar aplicación"**
+
+    If direction is **"both"**, the tool creates **two** service-policy entries:
+    - One for `input`
+    - One for `output`
+  </Step>
+</Steps>
+
+### Generated IOS Commands
+
+```ios Apply QoS to Interface
+interface GigabitEthernet0/1
+ service-policy output POLITICA_QOS
+ exit
+```
+
+---
+
+## Complete QoS Configuration Example
+
+Here's a full MQC setup prioritizing voice, video, and business traffic:
+
+```ios Full QoS Policy
+! ── Step 1: class-maps ──────────────────────────────────────
+class-map match-any CLASE_VOZ
+ match dscp ef
+ exit
+
+class-map match-any CLASE_VIDEO
+ match dscp af41
+ exit
+
+class-map match-any CLASE_NEGOCIO
+ match dscp af21
+ exit
+
+class-map match-any CLASE_SCAVENGER
+ match dscp cs1
+ exit
+
+! ── Step 2: policy-map ──────────────────────────────────────
+policy-map POLITICA_QOS
+ class CLASE_VOZ
+  priority 1000000        ! 1 Mbps priority queue for voice
+  exit
+ class CLASE_VIDEO
+  priority 3000000        ! 3 Mbps for video conferencing
+  exit
+ class CLASE_NEGOCIO
+  bandwidth 5000000       ! Guarantee 5 Mbps for business apps
+  exit
+ class CLASE_SCAVENGER
+  police rate 2000000 bps ! Limit scavenger to 2 Mbps
+  exit
+ exit
+
+! ── Step 3: service-policy ──────────────────────────────────
+interface GigabitEthernet0/1
+ service-policy output POLITICA_QOS
+ exit
+```
+
+---
+
+## QoS Best Practices
+
+<Note>
+  **Voice traffic priority**: Always use `priority` (not `bandwidth`) for voice (DSCP EF)
+  
+  Voice is **extremely** sensitive to delay and jitter. Priority queueing ensures sub-10ms latency.
+</Note>
+
+<Tip>
+  **Bandwidth allocation rule of thumb**:
+  - Voice/Video: 30-40%
+  - Business-critical: 30-40%
+  - Default: 20-30%
+  - Scavenger: 5-10%
+</Tip>
+
+<Warning>
+  **Total priority bandwidth limit**: Don't exceed **33% of link capacity** for priority queues
+  
+  Example on a 10 Mbps link: Max 3.3 Mbps total across all priority classes
+</Warning>
+
+---
+
+## Uplink Protection
+
+The tool **prevents** you from applying service-policy to `GigabitEthernet0/0` (the management uplink).
+
+<Warning>
+  Attempting to use `Gi0/0` shows:
+  ```
+  ✘ No apliques QoS directamente en GigabitEthernet0/0.
+    Usa una interfaz de acceso.
+  ```
+</Warning>
+
+Apply QoS to **access ports** (user-facing) or **inter-switch trunk ports**, never the management uplink.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Security" icon="shield" href="/guides/security">
+    Secure device access and add login protection
+  </Card>
+  <Card title="GRE over IPsec" icon="lock" href="/guides/gre-ipsec">
+    Configure encrypted tunnels between branches
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+<Tip>
+  The QoS configuration UI is implemented in:
+  - `ui/tab_qos.py` (lines 1-261)
+  - `core/command_builder.py:224-259` (MQC command generation)
+  - `constants.py:22-31` (DSCP preset values)
+</Tip>

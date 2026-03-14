@@ -1,0 +1,657 @@
+---
+title: 'Tab Builder Functions'
+description: 'Functions that construct UI tabs for Sucursales, DHCP, VLANs, Routing, QoS, Execution, Backup, Security, and GRE'
+---
+
+## Overview
+
+Tab builder functions construct complete UI panels with forms, listboxes, and action buttons. Each function receives the `app` object (application state) and a `parent` widget (the notebook tab frame).
+
+**Source files:**
+- `~/workspace/source/ui/tabs_sw_dhcp.py`
+- `~/workspace/source/ui/tab_vlan.py`
+- `~/workspace/source/ui/tab_routing.py`
+- `~/workspace/source/ui/tab_qos.py`
+- `~/workspace/source/ui/tab_exec_backup.py`
+- `~/workspace/source/ui/tab_security_gre.py`
+
+---
+
+## Sucursales & DHCP Tabs
+
+### build_tab_sw
+
+```python
+def build_tab_sw(app, parent)
+```
+
+Constructs the **Sucursales (Branches/Switches)** tab for managing switch connections.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.sw_name` | `tk.Entry` | Branch/switch name/ID |
+| `app.sw_ip` | `tk.Entry` | Management IP address |
+| `app.sw_user` | `tk.Entry` | SSH username (default: "admin") |
+| `app.sw_pass` | `tk.Entry` | SSH password (masked with `*`) |
+| `app.sw_secret` | `tk.Entry` | Enable secret (masked) |
+| `app.sw_listbox` | `tk.Listbox` | List of configured branches |
+| `app.detection_lbl` | `tk.Label` | L2/L3 detection status |
+
+**Features:**
+- **Protected uplink**: `UPLINK_IFACE` (Gi0/0) is never modified
+- **Auto-detection**: SSH test detects Layer 2 vs Layer 3 capability
+- **Multi-select**: Ctrl+click to apply config to multiple branches
+- **Connection policy info**: Displays which settings are never touched (SSH, users, VTY, crypto keys)
+
+**Actions:**
+- `＋ Agregar sucursal` - Add branch to in-memory list
+- `🔌 Probar conexión` - Test SSH and detect L2/L3
+- `✕ Eliminar seleccionada` - Remove selected branch
+
+---
+
+### build_tab_dhcp
+
+```python
+def build_tab_dhcp(app, parent)
+```
+
+Constructs the **DHCP Pools** tab for defining DHCP configurations.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.dhcp_name` | `tk.Entry` | Pool name |
+| `app.dhcp_net` | `tk.Entry` | Network address (e.g., 192.168.10.0) |
+| `app.dhcp_mask` | `tk.Entry` | Subnet mask |
+| `app.dhcp_gw` | `tk.Entry` | Gateway IP (SVI IP on L3 switches) |
+| `app.dhcp_listbox` | `tk.Listbox` | List of DHCP pools |
+
+**Behavior:**
+- Gateway IP is **automatically excluded** from the DHCP pool
+- On **L2 switches**: DHCP must be on R1 (router-on-a-stick)
+- On **L3 switches**: SVI receives the gateway IP from the pool
+
+---
+
+### get_dhcp_options
+
+```python
+def get_dhcp_options(app) -> list
+```
+
+Returns DHCP pool options formatted for combobox: `["0: PoolName", "1: PoolName2", ...]`
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+**Returns:** `list[str]` - Pool options in format `"index: name"`, or `["(sin pools)"]` if empty
+
+**Used by:** VLAN tab to link pools to VLANs
+
+---
+
+## VLAN Tab
+
+### build_tab_vlan
+
+```python
+def build_tab_vlan(app, parent)
+```
+
+Constructs the **VLANs and Ports** tab.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.v_id` | `tk.Entry` | VLAN ID (required) |
+| `app.v_name` | `tk.Entry` | VLAN name |
+| `app.chk_dhcp_var` | `tk.BooleanVar` | "Assign DHCP pool" checkbox |
+| `app.v_dhcp_combo` | `ttk.Combobox` | DHCP pool selector (disabled unless checkbox active) |
+| `app.chk_port_var` | `tk.BooleanVar` | "Assign ports to VLAN" checkbox |
+| `app.v_ports` | `tk.Entry` | Port ranges (e.g., "Gi0/1-3" or "Gi0/1,Gi0/3") |
+| `app.port_mode` | `ttk.Combobox` | "access" or "trunk" |
+| `app.chk_social_var` | `tk.BooleanVar` | "Block social networks" checkbox |
+| `app.v_acl_custom` | `ScrolledText` | Custom ACL rules |
+| `app.vlan_listbox` | `tk.Listbox` | List of configured VLANs |
+
+**Protected uplink:**
+- Rejects assignment of `UPLINK_IFACE` (Gi0/0) to any VLAN
+- Shows warning if user tries to include it
+
+**Port modes:**
+- **access** - Single VLAN per port (endpoint devices)
+- **trunk** - Multiple VLANs (inter-switch uplinks)
+
+**ACL Security:**
+- **Block social networks**: Pre-defined ACL for Facebook/Twitter
+- **Custom ACL**: Free-form rules (e.g., `deny ip host 10.0.0.5 any`)
+
+**Uses scrolled frame** via `make_scrolled_frame()` for vertical scrolling.
+
+---
+
+## Routing Tab
+
+### build_tab_routing
+
+```python
+def build_tab_routing(app, parent)
+```
+
+Constructs the **Routing** tab (inter-VLAN, static routes, OSPF).
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.chk_intervlan` | `tk.BooleanVar` | "Activate ip routing" (default: True) |
+| `app.rt_dest` | `tk.Entry` | Static route destination |
+| `app.rt_mask` | `tk.Entry` | Static route mask |
+| `app.rt_nh` | `tk.Entry` | Next-hop IP |
+| `app.default_nh` | `tk.Entry` | Default route next-hop (pre-filled: 10.255.255.1) |
+| `app.rt_listbox` | `tk.Listbox` | Static routes list |
+| `app.chk_ospf` | `tk.BooleanVar` | "Enable OSPF" checkbox |
+| `app.ospf_net` | `tk.Entry` | OSPF network address (disabled until OSPF enabled) |
+| `app.ospf_wild` | `tk.Entry` | OSPF wildcard mask |
+| `app.ospf_area` | `tk.Entry` | OSPF area (default: 0) |
+| `app.ospf_pid` | `tk.Entry` | OSPF process ID (default: 1) |
+| `app.ospf_listbox` | `tk.Listbox` | OSPF networks list |
+
+**Inter-VLAN Routing:**
+- Enables `ip routing` on L3 switches
+- **Automatically omitted** on detected L2 switches
+
+**Static Routes:**
+- Manual route entry
+- **Quick shortcut**: "Add default route" button (0.0.0.0/0 → R1)
+- Prevents duplicate default routes (asks to replace)
+
+**OSPF:**
+- **Why OSPF?** R1 needs to learn VLAN subredes for NAT/internet access
+- **Auto-fill from DHCP pools**: Calculates wildcard masks automatically
+- Process ID and area customizable
+
+**Uses scrolled frame** for long route lists.
+
+---
+
+## QoS Tab
+
+### build_tab_qos
+
+```python
+def build_tab_qos(app, parent)
+```
+
+Constructs the **QoS MQC** (Modular QoS CLI) tab for IOS 15.x.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.cls_name` | `tk.Entry` | class-map name |
+| `app.cls_match_type` | `ttk.Combobox` | "match-any" or "match-all" |
+| `app.cls_criteria` | `ttk.Combobox` | Match criterion (dscp, ip dscp, precedence, ACL, protocol) |
+| `app.cls_value` | `tk.Entry` | Criterion value (e.g., "ef", "46") |
+| `app.cls_listbox` | `tk.Listbox` | class-maps list |
+| `app.pol_name` | `tk.Entry` | policy-map name (default: "POLITICA_QOS") |
+| `app.pol_class_sel` | `ttk.Combobox` | Select class for policy |
+| `app.pol_action` | `ttk.Combobox` | Action: priority, bandwidth, police, shape, set dscp |
+| `app.pol_value` | `tk.Entry` | Action value (bps or DSCP) |
+| `app.pol_listbox` | `tk.Listbox` | policy-map entries list |
+| `app.sp_iface` | `tk.Entry` | Interface for service-policy |
+| `app.sp_dir` | `ttk.Combobox` | Direction: input, output, both |
+| `app.sp_listbox` | `tk.Listbox` | service-policies list |
+
+**MQC Flow (3 steps):**
+
+1. **class-map** - Classify traffic by DSCP, IP, or ACL
+2. **policy-map** - Define actions: police (limit), shape (mold), priority, bandwidth, set dscp
+3. **service-policy** - Apply policy to interface (input/output)
+
+**DSCP Presets:**
+Quick-fill buttons for common DSCP values from `DSCP_PRESETS` constant:
+- EF (Expedited Forwarding) - VoIP
+- AF41, AF31 - Video
+- CS0 - Best effort
+
+**Protected uplink:**
+- Rejects service-policy on `UPLINK_IFACE` (Gi0/0)
+
+**service-policy "both" direction:**
+- Creates two entries: one `input`, one `output`
+
+**Uses scrolled frame** for long QoS config.
+
+---
+
+## Execution & Backup Tabs
+
+### build_tab_exec
+
+```python
+def build_tab_exec(app, parent)
+```
+
+Constructs the **Execution** tab with deploy/clean buttons and console log.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.log_area` | `ScrolledText` | Real-time console log (black bg, green text) |
+
+**Actions:**
+- **▶ APLICAR A SUCURSALES SELECCIONADAS** - Deploy config to selected branches
+- **🗑 LIMPIAR SWITCH (sin tocar SSH)** - Clean config without touching SSH/users
+
+**Log styling:**
+- Background: `#010409` (very dark)
+- Text: `#00ff41` (terminal green)
+- Auto-scrolls to bottom on new entries
+
+---
+
+### deploy_config
+
+```python
+def deploy_config(app)
+```
+
+Applies full configuration to selected branches.
+
+**Flow:**
+1. Validate branches configured
+2. Get selected branches from listbox
+3. Ask: "Clean before apply?"
+4. Build config params from app state
+5. For each branch: `run_on_switch()` with logging
+6. Show results summary
+7. Offer JSON export if successful
+
+---
+
+### clean_switch
+
+```python
+def clean_switch(app)
+```
+
+Removes configuration from selected branches **without touching SSH, users, or crypto keys**.
+
+**Uses:**
+- `build_cleanup_commands()` from `core/command_builder.py`
+- Removes VLANs, DHCP pools, static routes, OSPF networks, QoS policies
+- Saves running-config after cleanup
+
+---
+
+### build_tab_backup
+
+```python
+def build_tab_backup(app, parent)
+```
+
+Constructs the **Backup and Restore** tab.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.backup_preview` | `ScrolledText` | Preview of JSON/running-config |
+| `app.s3_access_key` | `tk.Entry` | AWS Access Key ID |
+| `app.s3_secret_key` | `tk.Entry` | AWS Secret Access Key (masked) |
+| `app.s3_region` | `tk.Entry` | AWS region (default: "us-east-1") |
+| `app.s3_bucket` | `tk.Entry` | S3 bucket name |
+| `app.s3_prefix` | `tk.Entry` | S3 key prefix (default: "backups/switches/") |
+
+**Three sections:**
+
+1. **Config JSON Export/Import**
+   - `export_config()` - Save DHCP, VLANs, routes, QoS to JSON (no passwords)
+   - `import_config()` - Load config from JSON and reload all listboxes
+
+2. **Running-Config Download**
+   - `backup_running_config()` - Fetch `show running-config` via SSH → save as .txt
+
+3. **AWS S3 Backup**
+   - `backup_to_s3()` - Upload running-config to S3 with encryption (AES256)
+   - `verify_s3_credentials()` - Test bucket access with `head_bucket()`
+   - Requires: `pip install boto3 --break-system-packages`
+
+**S3 key format:**
+```
+<prefix>/<hostname>/<YYYY-MM-DD_HH-MM-SS>.txt
+```
+
+Example: `backups/switches/SW-OFICINA/2025-01-15_10-30-00.txt`
+
+---
+
+## Security & GRE Tabs
+
+### build_tab_security
+
+```python
+def build_tab_security(app, parent)
+```
+
+Constructs the **Security** tab (enable secret, login block-for, banner MOTD).
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.sec_enable_pw` | `tk.Entry` | Enable secret password (MD5 type-5) |
+| `app.sec_login_attempts` | `tk.Entry` | Max failed login attempts (default: 5) |
+| `app.sec_login_window` | `tk.Entry` | Time window in seconds (default: 60) |
+| `app.sec_login_block` | `tk.Entry` | Block duration in seconds (default: 120) |
+| `app.sec_banner_text` | `ScrolledText` | MOTD banner text (cannot contain '#') |
+
+**Enable Secret:**
+- Uses `enable secret` (MD5 type-5) instead of `enable password` (reversible type-7)
+
+**Login Block-For:**
+- IOS syntax: `login block-for <seconds> attempts <N> within <window>`
+- Example: `login block-for 120 attempts 5 within 60`
+  - If 5 failed attempts in 60 seconds → block VTY/SSH for 120 seconds
+
+**Banner MOTD:**
+- Pre-filled with legal warning template
+- Delimiter `#` is used; any `#` in text is replaced with `*`
+
+**Preview button** shows generated IOS commands.
+
+---
+
+### build_security_commands
+
+```python
+def build_security_commands(
+    enable_pw: str,
+    attempts: str,
+    window: str,
+    block_for: str,
+    banner_text: str
+) -> list
+```
+
+Generates IOS commands for security settings.
+
+<ParamField path="enable_pw" type="str">
+  Enable secret password
+</ParamField>
+
+<ParamField path="attempts" type="str">
+  Failed login attempts before blocking
+</ParamField>
+
+<ParamField path="window" type="str">
+  Time window (seconds) to count attempts
+</ParamField>
+
+<ParamField path="block_for" type="str">
+  Block duration (seconds)
+</ParamField>
+
+<ParamField path="banner_text" type="str">
+  Banner message (no '#' allowed)
+</ParamField>
+
+**Returns:** `list[str]` - IOS commands ready to send
+
+**Commands generated:**
+- `enable secret <password>`
+- `login block-for <b> attempts <a> within <w>`
+- `login on-failure log`
+- `banner motd #<text>#`
+
+---
+
+### build_tab_gre
+
+```python
+def build_tab_gre(app, parent)
+```
+
+Constructs the **GRE over IPsec** tab for encrypted tunnels.
+
+<ParamField path="app" type="object">
+  Application state object
+</ParamField>
+
+<ParamField path="parent" type="tk.Widget">
+  Notebook tab frame
+</ParamField>
+
+**Widgets created on `app`:**
+
+| Widget | Type | Purpose |
+|--------|------|----------|
+| `app.gre_tunnel_id` | `tk.Entry` | Tunnel interface number (default: 0) |
+| `app.gre_local_src` | `tk.Entry` | Local source IP (physical interface) |
+| `app.gre_remote_dst` | `tk.Entry` | Remote peer IP (destination) |
+| `app.gre_tunnel_ip` | `tk.Entry` | Tunnel IP (local end) |
+| `app.gre_tunnel_mask` | `tk.Entry` | Tunnel subnet mask |
+| `app.gre_isakmp_key` | `tk.Entry` | Pre-shared key (masked) |
+| `app.gre_isakmp_peer` | `tk.Entry` | IPsec peer IP |
+| `app.gre_map_name` | `tk.Entry` | Crypto map name (default: "CMAP_GRE") |
+| `app.gre_map_seq` | `tk.Entry` | Crypto map sequence (default: 10) |
+| `app.gre_bind_iface` | `tk.Entry` | Physical interface for crypto map |
+| `app.gre_list` | `tk.Listbox` | Configured tunnels |
+| `app.gre_tunnels` | `list[dict]` | In-memory tunnel configs |
+
+**GRE over IPsec Architecture:**
+
+```
+Physical:  SW [Gi0/X] ← GRE in IPsec → [Gi0/X] Peer
+Logical:   Tunnel0 (10.x.x.1) ←────────→ Tunnel0 (10.x.x.2)
+```
+
+**IKEv1 Phase 1 (ISAKMP):**
+- Encryption: AES-256
+- Hash: SHA-1
+- Auth: Pre-shared key
+- DH Group: 2 (1024-bit) — max supported by IOSvL2 15.2
+- Lifetime: 86400 sec (24 hours)
+
+**IPsec Phase 2 (ESP):**
+- Transform-set: `esp-aes 256 esp-sha-hmac`
+- Mode: **transport** (encrypts GRE payload, not IP header)
+
+**Why GRE + IPsec and not just IPsec?**
+- IPsec alone cannot encapsulate multicast/broadcast
+- GRE creates point-to-point tunnel supporting multicast (needed for OSPF, EIGRP)
+- IPsec encrypts the entire GRE tunnel transparently
+
+---
+
+### build_gre_ipsec_commands
+
+```python
+def build_gre_ipsec_commands(tunnels: list) -> list
+```
+
+Generates complete IOS commands for GRE over IPsec tunnels.
+
+<ParamField path="tunnels" type="list[dict]">
+  List of tunnel configs with keys: `tunnel_id`, `src`, `dst`, `tunnel_ip`, `tunnel_mask`, `psk`, `peer`, `map_name`, `map_seq`, `bind_iface`
+</ParamField>
+
+**Returns:** `list[str]` - IOS commands in correct order
+
+**Generated for each tunnel:**
+
+1. **ISAKMP Policy** (Phase 1)
+   ```
+   crypto isakmp policy <N>
+    encr aes 256
+    hash sha
+    authentication pre-share
+    group 2
+    lifetime 86400
+   ```
+
+2. **ISAKMP Key** (PSK)
+   ```
+   crypto isakmp key <psk> address <peer>
+   ```
+
+3. **ACL for GRE traffic**
+   ```
+   ip access-list extended ACL_GRE_<tid>
+    permit gre host <src> host <dst>
+   ```
+
+4. **Transform-Set** (Phase 2)
+   ```
+   crypto ipsec transform-set TS_GRE_<tid> esp-aes 256 esp-sha-hmac
+    mode transport
+   ```
+
+5. **Crypto Map**
+   ```
+   crypto map <name> <seq> ipsec-isakmp
+    set peer <peer>
+    set transform-set TS_GRE_<tid>
+    match address ACL_GRE_<tid>
+   ```
+
+6. **Bind to interface**
+   ```
+   interface <bind_iface>
+    crypto map <name>
+   ```
+
+7. **Tunnel interface**
+   ```
+   interface Tunnel<tid>
+    ip address <tunnel_ip> <tunnel_mask>
+    tunnel source <src>
+    tunnel destination <dst>
+    tunnel mode gre ip
+    no shutdown
+   ```
+
+<Warning>
+  Compatible with **IOSvL2 15.2** experimental firmware that supports GRE + IPsec in software mode.
+</Warning>
+
+---
+
+## Common Patterns
+
+### State Management
+
+All tab builders store widget references and data lists on the `app` object:
+
+```python
+app.sucursales = []       # List of branch dicts
+app.dhcp_pools = []       # List of DHCP pool dicts
+app.vlans_data = []       # List of VLAN dicts
+app.static_routes = []    # List of route dicts
+app.ospf_networks = []    # List of OSPF network dicts
+app.qos_classes = []      # List of class-map dicts
+app.pol_entries = []      # List of policy-map entries
+app.service_policies = [] # List of service-policy dicts
+app.gre_tunnels = []      # List of GRE tunnel dicts
+```
+
+### Listbox Update Pattern
+
+```python
+def _add_item(app):
+    # 1. Validate form fields
+    # 2. Append to app data list
+    app.items.append(item_dict)
+    # 3. Insert formatted string to listbox
+    app.item_listbox.insert(tk.END, formatted_string)
+    # 4. Clear form fields
+```
+
+### Protected Uplink
+
+Multiple tabs reject operations on `UPLINK_IFACE` (Gi0/0):
+- VLAN port assignment
+- QoS service-policy
+- GRE crypto map binding
+
+### Enable/Disable Toggle Pattern
+
+```python
+def _toggle_feature(app):
+    state = "normal" if app.chk_var.get() else "disabled"
+    app.related_entry.config(state=state)
+```
+
+Used in: VLAN (DHCP/ports), Routing (OSPF)

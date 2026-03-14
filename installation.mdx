@@ -1,0 +1,210 @@
+---
+title: Installation
+description: Set up SECURE-BRANCH-lac and install required dependencies
+---
+
+## Prerequisites
+
+Before installing SECURE-BRANCH-lac, ensure you have:
+
+- **Python 3.x** with Tkinter support (usually included in standard Python distributions)
+- **SSH access** to Cisco IOSvL2 switches
+- **Network connectivity** between your workstation and target switches
+- **Switch credentials** with privilege 15 access
+
+<Warning>
+The tool is designed for **`vios_l2-ADVENTERPRISEK9-M`** firmware, IOS Experimental 15.2(20200924:215240). Other IOS versions may have compatibility issues.
+</Warning>
+
+## Installing Dependencies
+
+SECURE-BRANCH-lac requires two Python packages:
+
+### Required: Netmiko
+
+Netmiko provides SSH connectivity to Cisco switches:
+
+```bash
+pip install netmiko --break-system-packages
+```
+
+<Info>
+The `--break-system-packages` flag is required on some Linux distributions that use externally-managed Python environments. If you encounter permission errors, consider using a virtual environment instead.
+</Info>
+
+### Optional: Boto3 (for AWS S3 Backup)
+
+If you plan to use the AWS S3 backup feature, install boto3:
+
+```bash
+pip install boto3 --break-system-packages
+```
+
+<Note>
+AWS S3 backup is optional. You can still use local backup and JSON export/import without boto3.
+</Note>
+
+## Dependency Overview
+
+| Package | Purpose | Installation | Required |
+|---------|---------|--------------|----------|
+| **tkinter** | Graphical user interface | Included in standard Python | Yes |
+| **netmiko** | SSH connection to Cisco switches | `pip install netmiko --break-system-packages` | Yes |
+| **boto3** | AWS S3 backup integration | `pip install boto3 --break-system-packages` | No |
+
+## Using a Virtual Environment (Recommended)
+
+For better dependency management, use a Python virtual environment:
+
+<Steps>
+  <Step title="Navigate to project directory">
+    ```bash
+    cd SECURE-BRANCH-lac
+    ```
+  </Step>
+  
+  <Step title="Create virtual environment">
+    ```bash
+    python3 -m venv env
+    ```
+  </Step>
+  
+  <Step title="Activate virtual environment">
+    ```bash
+    source env/bin/activate
+    ```
+    
+    On Windows:
+    ```bash
+    env\Scripts\activate
+    ```
+  </Step>
+  
+  <Step title="Install dependencies">
+    ```bash
+    pip install netmiko
+    pip install boto3  # Optional, for S3 backup
+    ```
+    
+    <Info>
+    When using a virtual environment, the `--break-system-packages` flag is not needed.
+    </Info>
+  </Step>
+</Steps>
+
+## Verifying Installation
+
+Test that dependencies are installed correctly:
+
+<CodeGroup>
+```bash Check Netmiko
+python -c "import netmiko; print('Netmiko version:', netmiko.__version__)"
+```
+
+```bash Check Boto3
+python -c "import boto3; print('Boto3 version:', boto3.__version__)"
+```
+
+```bash Check Tkinter
+python -c "import tkinter; print('Tkinter available')"
+```
+</CodeGroup>
+
+## Firewall and Network Requirements
+
+Ensure the following network connectivity:
+
+### SSH Access (Port 22)
+
+- Your workstation must reach switches on **TCP port 22**
+- Switches must have SSH enabled and configured
+- User account needs **privilege 15** or enable access
+
+### AWS S3 (Optional)
+
+If using S3 backup:
+
+- Internet connectivity to AWS endpoints (typically HTTPS/443)
+- Valid AWS credentials (Access Key ID and Secret Access Key)
+- S3 bucket with write permissions
+
+<Tip>
+Test SSH connectivity manually before using the tool:
+
+```bash
+ssh admin@192.168.1.10
+```
+
+If you can log in and access privileged mode, the tool should work correctly.
+</Tip>
+
+## AWS S3 Configuration (Optional)
+
+If you plan to use S3 backup, prepare the following information:
+
+| Parameter | Description | Example |
+|-----------|-------------|--------|
+| **Access Key ID** | AWS IAM access key | `AKIAIOSFODNN7EXAMPLE` |
+| **Secret Access Key** | AWS IAM secret key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+| **AWS Region** | S3 bucket region | `us-east-1` |
+| **Bucket Name** | S3 bucket for backups | `my-switch-backups` |
+| **Prefix/Folder** | Path prefix in bucket | `backups/switches/` |
+
+<Warning>
+**Security Best Practice:** AWS credentials are **never saved to disk** or exported in JSON files. You must enter them each time you use S3 backup.
+</Warning>
+
+### S3 Backup Features
+
+- **Server-side encryption** with AES256 automatically applied
+- **Timestamped filenames**: `<prefix>/<branch-name>/YYYY-MM-DD_HH-MM-SS.txt`
+- **Metadata headers** with branch name, IP, timestamp, and S3 path
+- **Credential verification** button (uses `head_bucket` - no AWS charges)
+
+Example S3 path:
+```
+backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+```
+
+## Troubleshooting
+
+### "No module named 'netmiko'"
+
+Install netmiko:
+```bash
+pip install netmiko --break-system-packages
+```
+
+### "externally-managed-environment" Error
+
+Your system uses externally-managed Python. Either:
+
+1. Use the `--break-system-packages` flag (as shown above)
+2. Create and use a virtual environment (recommended)
+
+### Tkinter Not Available
+
+On Debian/Ubuntu:
+```bash
+sudo apt-get install python3-tk
+```
+
+On Fedora/RHEL:
+```bash
+sudo dnf install python3-tkinter
+```
+
+### SSH Connection Timeout
+
+Check:
+
+- Network connectivity: `ping <switch-ip>`
+- SSH port open: `telnet <switch-ip> 22`
+- Firewall rules on workstation and switch
+- Correct IP address and credentials
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Learn how to configure your first switch with SECURE-BRANCH-lac
+</Card>

@@ -1,0 +1,760 @@
+---
+title: '9-Tab Workflow'
+description: 'Step-by-step guide to configuring switches using SECURE-BRANCH-lac'
+icon: 'list-check'
+---
+
+## Overview
+
+SECURE-BRANCH-lac uses a **9-tab workflow** that guides you through all aspects of switch configuration. Each tab builds on the previous ones, creating a complete configuration by the time you reach the Execution tab.
+
+<Info>
+You don't need to complete all tabs. Configure only what you need, and the app will generate appropriate commands.
+</Info>
+
+## The 9 Tabs
+
+Here's the complete workflow as defined in the application:
+
+```python
+tabs = [
+    ("tab_sw",       "① Sucursales"),
+    ("tab_dhcp",     "② DHCP"),
+    ("tab_vlan",     "③ VLANs y Puertos"),
+    ("tab_routing",  "④ Enrutamiento"),
+    ("tab_qos",      "⑤ QoS MQC"),
+    ("tab_exec",     "⑥ Ejecución"),
+    ("tab_backup",   "⑦ Backup"),
+    ("tab_security", "⑧ Seguridad"),
+    ("tab_gre",      "⑨ GRE/IPsec"),
+]
+```
+
+Source: [app.py:92-102](file:///home/daytona/workspace/source/app.py#L92-L102)
+
+---
+
+## Tab-by-Tab Guide
+
+### ① Sucursales (Branches)
+
+**Purpose:** Define the switches you want to configure
+
+<Steps>
+  <Step title="Add Switch Information">
+    For each switch, provide:
+    - **Name**: Identifier (e.g., "SW-CDMX", "SW-MTY")
+    - **IP Address**: Management IP
+    - **Username**: SSH username
+    - **Password**: SSH password
+    - **Enable Secret**: Privilege mode password
+  </Step>
+
+  <Step title="Test Connection">
+    Click **Test Connection** to verify:
+    - SSH connectivity
+    - Credentials are correct
+    - Layer 2 vs Layer 3 detection
+
+    ```python
+    def test_connection(sw: dict):
+        """
+        Tests SSH connection to switch and detects Layer 2 vs Layer 3.
+        
+        Returns:
+          dict : {
+              'hostname': str,    # switch name (from prompt)
+              'is_l3':    bool,   # True = Layer 3
+              'ver_out':  str,    # 'show version | include IOS' output
+          }
+        """
+    ```
+
+    Source: [connector.py:241-271](file:///home/daytona/workspace/source/core/connector.py#L241-L271)
+  </Step>
+
+  <Step title="Save Switches">
+    All switches are stored in `app.sucursales` list for later use
+  </Step>
+</Steps>
+
+<Note>
+**Protected Interface:** The uplink interface (`GigabitEthernet0/0`) is **never modified** to prevent losing management access.
+</Note>
+
+---
+
+### ② DHCP
+
+**Purpose:** Define DHCP pools for VLANs (Layer 3 switches only)
+
+<Warning>
+DHCP pools are **only deployed on Layer 3 switches**. Layer 2 switches rely on the router (R1) for DHCP.
+</Warning>
+
+<Steps>
+  <Step title="Create DHCP Pool">
+    For each pool, specify:
+    - **Pool Name**: e.g., "VLAN10_POOL"
+    - **Network**: e.g., "10.10.10.0"
+    - **Subnet Mask**: e.g., "255.255.255.0"
+    - **Default Gateway**: e.g., "10.10.10.1" (will be the SVI IP)
+  </Step>
+
+  <Step title="Gateway Exclusion">
+    The app automatically excludes the gateway IP from the DHCP range:
+
+    ```python
+    if is_l3:
+        for pool in dhcp_pools:
+            cmds.append(f"ip dhcp excluded-address {pool['gw']}")
+            cmds += [
+                f"ip dhcp pool {pool['name']}",
+                f"network {pool['net']} {pool['mask']}",
+                f"default-router {pool['gw']}",
+                "dns-server 8.8.8.8",
+                "exit"
+            ]
+    ```
+
+    Source: [command_builder.py:115-127](file:///home/daytona/workspace/source/core/command_builder.py#L115-L127)
+  </Step>
+</Steps>
+
+**Generated Commands:**
+```cisco
+ip dhcp excluded-address 10.10.10.1
+ip dhcp pool VLAN10_POOL
+ network 10.10.10.0 255.255.255.0
+ default-router 10.10.10.1
+ dns-server 8.8.8.8
+ exit
+```
+
+---
+
+### ③ VLANs y Puertos (VLANs and Ports)
+
+**Purpose:** Create VLANs and assign ports
+
+<Tabs>
+  <Tab title="VLAN Creation">
+    For each VLAN:
+    - **VLAN ID**: 1-4094
+    - **VLAN Name**: Descriptive name
+    - **DHCP Pool**: Link to pool from Tab ②
+
+    ```python
+    for v in vlans_data:
+        cmds.append(f"vlan {v['id']}")
+        if v['name']:
+            cmds.append(f"name {v['name']}")
+        cmds.append("exit")
+    ```
+
+    Source: [command_builder.py:129-135](file:///home/daytona/workspace/source/core/command_builder.py#L129-L135)
+  </Tab>
+
+  <Tab title="Port Assignment">
+    Assign ports using flexible notation:
+
+    **Access Mode** (single VLAN per port):
+    - `Gi0/1` - Single port
+    - `Gi0/1-3` - Port range (0/1, 0/2, 0/3)
+    - `Gi0/1,Gi0/5` - Multiple ports
+
+    **Trunk Mode** (multiple VLANs):
+    - Used for switch-to-switch or switch-to-router links
+
+    ```python
+    if v['port_mode'] == 'trunk':
+        cmds += [
+            "switchport trunk encapsulation dot1q",
+            "switchport mode trunk",
+            f"switchport trunk allowed vlan add {v['id']}",
+            "no shutdown",
+            "exit"
+        ]
+    else:
+        cmds += [
+            "switchport mode access",
+            f"switchport access vlan {v['id']}",
+            "spanning-tree portfast",  # Skip 30s STP delay for PCs
+            "no shutdown",
+            "exit"
+        ]
+    ```
+
+    Source: [command_builder.py:149-167](file:///home/daytona/workspace/source/core/command_builder.py#L149-L167)
+  </Tab>
+
+  <Tab title="Security ACLs">
+    Optional security features per VLAN:
+
+    **Block Social Media:**
+    - Blocks Facebook and Twitter/X via IP + port 443
+
+    ```python
+    if v['block_social']:
+        cmds += [
+            "deny tcp any host 157.240.22.35 eq 443",   # Facebook
+            "deny tcp any host 104.244.42.1  eq 443",   # Twitter/X
+        ]
+    ```
+
+    **Custom ACL Rules:**
+    - Add custom ACL entries (one per line)
+
+    ACLs are applied to SVIs (Layer 3 only):
+    ```python
+    if needs_acl:
+        cmds.append(f"ip access-group {acl_name} in")
+    ```
+
+    Source: [command_builder.py:169-207](file:///home/daytona/workspace/source/core/command_builder.py#L169-L207)
+  </Tab>
+</Tabs>
+
+**Port Expansion Example:**
+
+```python
+def expand_ports(ports_str: str) -> str:
+    """
+    Normalizes interface names to full form expected by IOS 15.x.
+
+    Accepts short or long notation:
+      - "Gi0/1-3"     → "GigabitEthernet0/1-3"
+      - "Gi0/1,Gi0/3" → "GigabitEthernet0/1, GigabitEthernet0/3"
+      - "Fa0/2"       → "FastEthernet0/2"
+    """
+```
+
+Source: [command_builder.py:19-50](file:///home/daytona/workspace/source/core/command_builder.py#L19-L50)
+
+---
+
+### ④ Enrutamiento (Routing)
+
+**Purpose:** Configure inter-VLAN routing and OSPF (Layer 3 only)
+
+<Tabs>
+  <Tab title="Enable IP Routing">
+    Checkbox to enable `ip routing` command:
+
+    ```python
+    if chk_intervlan and is_l3:
+        cmds += ["ip routing", "service dhcp"]
+    elif not is_l3 and log_fn:
+        log_fn("[INFO] Switch L2 detected → omitting 'ip routing' and SVIs with IP")
+    ```
+
+    Source: [command_builder.py:108-113](file:///home/daytona/workspace/source/core/command_builder.py#L108-L113)
+  </Tab>
+
+  <Tab title="Static Routes">
+    Define static routes:
+    - **Destination**: Network address
+    - **Mask**: Subnet mask
+    - **Next Hop**: Gateway IP
+
+    ```python
+    for rt in static_routes:
+        cmds.append(f"ip route {rt['dest']} {rt['mask']} {rt['nexthop']}")
+    ```
+
+    Source: [command_builder.py:209-212](file:///home/daytona/workspace/source/core/command_builder.py#L209-L212)
+
+    **Common Example:**
+    ```cisco
+    ip route 0.0.0.0 0.0.0.0 192.168.1.1  ! Default route to R1
+    ```
+  </Tab>
+
+  <Tab title="OSPF">
+    Enable OSPF routing protocol:
+    - **OSPF Process ID**: e.g., "1"
+    - **Networks**: Define which networks to advertise
+
+    For each network:
+    - **Network**: e.g., "10.10.10.0"
+    - **Wildcard Mask**: e.g., "0.0.0.255"
+    - **Area**: e.g., "0"
+
+    ```python
+    if chk_ospf and ospf_networks:
+        pid = ospf_pid.strip() or "1"
+        cmds.append(f"router ospf {pid}")
+        for n in ospf_networks:
+            cmds.append(f"network {n['network']} {n['wildcard']} area {n['area']}")
+        cmds.append("exit")
+    ```
+
+    Source: [command_builder.py:214-222](file:///home/daytona/workspace/source/core/command_builder.py#L214-L222)
+
+    <Info>
+    OSPF allows R1 to learn about new VLANs and provide NAT for internet access.
+    </Info>
+  </Tab>
+</Tabs>
+
+---
+
+### ⑤ QoS MQC (Quality of Service)
+
+**Purpose:** Configure Modular QoS CLI (class-map, policy-map, service-policy)
+
+<Steps>
+  <Step title="Define Class-Maps">
+    Classify traffic by:
+    - **DSCP values** (e.g., EF, AF41)
+    - **IP addresses** (source/destination)
+    - **ACLs** (custom matching)
+
+    ```python
+    for cls in qos_classes:
+        cmds += [
+            f"class-map {cls['match_type']} {cls['name']}",
+            f"match {cls['criteria']} {cls['value']}",
+            "exit"
+        ]
+    ```
+
+    Source: [command_builder.py:224-231](file:///home/daytona/workspace/source/core/command_builder.py#L224-L231)
+  </Step>
+
+  <Step title="Create Policy-Map">
+    Define actions for each traffic class:
+
+    **Available Actions:**
+    - `priority` - High-priority queue (voice/video)
+    - `bandwidth` - Guaranteed minimum bandwidth
+    - `police rate` - Rate limit (drop excess)
+    - `shape average` - Traffic shaping (buffer + delay)
+    - `set dscp` - Re-mark DSCP value
+
+    ```python
+    if pol_entries and pol_name:
+        cmds.append(f"policy-map {pol_name}")
+        for pe in pol_entries:
+            cmds.append(f"class {pe['class']}")
+            a, v = pe['action'], pe['value']
+            if   a == "police rate":     cmds += [f"police rate {v} bps", "exit"]
+            elif a == "shape average":   cmds += [f"shape average {v}",   "exit"]
+            elif a == "set dscp":        cmds += [f"set dscp {v}",        "exit"]
+            else:                        cmds += [f"{a} {v}",             "exit"]
+        cmds.append("exit")
+    ```
+
+    Source: [command_builder.py:233-249](file:///home/daytona/workspace/source/core/command_builder.py#L233-L249)
+  </Step>
+
+  <Step title="Apply Service-Policy">
+    Attach policy-map to interfaces:
+    - **Interface**: e.g., "GigabitEthernet0/1"
+    - **Direction**: input, output, or both
+    - **Policy Name**: The policy-map to apply
+
+    ```python
+    for sp in service_policies:
+        cmds += [
+            f"interface {sp['iface']}",
+            f"service-policy {sp['dir']} {sp['policy']}",
+            "exit"
+        ]
+    ```
+
+    Source: [command_builder.py:251-259](file:///home/daytona/workspace/source/core/command_builder.py#L251-L259)
+
+    <Warning>
+    QoS is **never applied** to the uplink interface (Gi0/0) to avoid disrupting management traffic.
+    </Warning>
+  </Step>
+</Steps>
+
+---
+
+### ⑥ Ejecución (Execution)
+
+**Purpose:** Deploy configuration to selected switches
+
+<Steps>
+  <Step title="Select Switches">
+    Choose which switches from Tab ① to configure
+  </Step>
+
+  <Step title="Optional: Clean Previous Config">
+    Check **"Clean previous configuration"** to remove old settings first
+
+    The cleanup process:
+    ```python
+    def build_cleanup_commands(nc, static_routes: list, ospf_networks: list, log_fn=None) -> list:
+        """
+        Reads running-config and generates 'no ...' commands to clean
+        only what this app may have configured previously.
+
+        Protects:
+          - SSH, users, VTY, crypto keys (remote access)
+          - Uplink interface (UPLINK_IFACE)
+          - Static routes and OSPF networks NOT configured by this app
+          - VLAN 1 (native, never deleted)
+        """
+    ```
+
+    Source: [command_builder.py:289-310](file:///home/daytona/workspace/source/core/command_builder.py#L289-L310)
+  </Step>
+
+  <Step title="Execute Configuration">
+    Click **Execute** to start deployment
+
+    The process:
+    1. Connect via SSH (Netmiko)
+    2. Detect Layer 2 vs Layer 3
+    3. Optional: Clean previous config
+    4. Generate commands via `build_commands()`
+    5. Send commands one-by-one with adaptive timing
+    6. Save config (`write memory`)
+    7. Disconnect
+
+    ```python
+    def send_cmd_by_cmd(nc, commands: list, log_fn=None):
+        """
+        Sends IOS commands to switch individually with adaptive delays.
+
+        Why command-by-command instead of send_config_set?
+        → Some commands (OSPF, ip route) recalculate routing tables
+          and need more time. This method adjusts delay per command.
+        """
+    ```
+
+    Source: [connector.py:72-127](file:///home/daytona/workspace/source/core/connector.py#L72-L127)
+  </Step>
+
+  <Step title="Monitor Progress">
+    Real-time log shows:
+    - Current switch being configured
+    - Each command being sent
+    - Warnings or errors from IOS
+    - Success/failure status
+
+    **Sample Output:**
+    ```
+    ────────────────────────────────────────────────────────
+      Sucursal: SW-CDMX  |  192.168.1.10
+    ────────────────────────────────────────────────────────
+      ✔ Connected: 'SW-CDMX-01'  |  Layer 3
+      [Config] Sending 47 commands...
+      [1/47] ip routing
+      [2/47] service dhcp
+      [3/47] ip dhcp excluded-address 10.10.10.1
+      ...
+      ✔ SW-CDMX — GUARDADO EXITOSAMENTE
+    ```
+  </Step>
+</Steps>
+
+<Note>
+**Slow Commands:** OSPF and routing commands use `delay_factor=6` and `read_timeout=120` to prevent timeouts during SPF recalculation.
+</Note>
+
+---
+
+### ⑦ Backup
+
+**Purpose:** Export/import configurations and save running-configs
+
+<Tabs>
+  <Tab title="Export/Import JSON">
+    **Export:** Save all configuration data to JSON file
+    - Switches
+    - DHCP pools
+    - VLANs
+    - Routes
+    - QoS policies
+    - Security settings
+    - GRE tunnels
+
+    **Import:** Load previously saved configuration
+
+    <Warning>
+    **Credentials are NOT saved** in JSON for security reasons.
+    </Warning>
+  </Tab>
+
+  <Tab title="Download Running-Config (Local)">
+    Download `running-config` from selected switches to local files:
+
+    ```python
+    def fetch_running_config(sw: dict) -> str:
+        """
+        Downloads the current running-config from switch.
+
+        Returns: str (complete running-config contents)
+        """
+        nc  = ConnectHandler(**make_device_params(sw))
+        nc.enable()
+        raw = nc.send_command("show running-config", delay_factor=4)
+        nc.disconnect()
+        return raw
+    ```
+
+    Source: [connector.py:218-238](file:///home/daytona/workspace/source/core/connector.py#L218-L238)
+
+    Files are saved as: `<switch-name>_<timestamp>.txt`
+  </Tab>
+
+  <Tab title="Upload to AWS S3">
+    Upload running-configs to AWS S3 bucket for centralized backup:
+
+    **Configuration Required:**
+    - Access Key ID
+    - Secret Access Key
+    - AWS Region (e.g., us-east-1)
+    - Bucket Name
+    - Prefix/folder path
+
+    **S3 Object Path:**
+    ```
+    <prefix>/<switch-name>/<YYYY-MM-DD_HH-MM-SS>.txt
+    ```
+
+    **Example:**
+    ```
+    backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+    ```
+
+    **Features:**
+    - Automatic **SSE-AES256** encryption at rest
+    - Metadata header (switch name, IP, date, S3 path)
+    - Credential verification button (`head_bucket`)
+    - Credentials **never saved to disk**
+
+    <Info>
+    From the README: "Las credenciales **no se guardan en disco** ni se exportan en el JSON"
+    </Info>
+
+    Source: [README.md:103-127](file:///home/daytona/workspace/source/README.md#L103-L127)
+  </Tab>
+</Tabs>
+
+---
+
+### ⑧ Seguridad (Security)
+
+**Purpose:** Configure device access security (v2.2 feature)
+
+<AccordionGroup>
+  <Accordion title="Enable Secret (MD5 Type-5)">
+    Set a strong enable password using irreversible MD5 hashing:
+
+    ```cisco
+    enable secret <password>
+    ```
+
+    <Note>
+    More secure than `enable password` (Type 7), which uses reversible encryption.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Login Block-For (Brute-Force Protection)">
+    Automatically block SSH access after failed login attempts:
+
+    ```cisco
+    login block-for 120 attempts 5 within 60
+    login on-failure log
+    ```
+
+    **Configuration:**
+    - **Attempts:** Max failed logins (e.g., 5)
+    - **Within:** Time window in seconds (e.g., 60)
+    - **Block For:** Lockout duration in seconds (e.g., 120)
+
+    **Behavior:** If 5 failed attempts occur within 60 seconds, VTY/SSH access is blocked for 120 seconds and logged to syslog.
+  </Accordion>
+
+  <Accordion title="Banner MOTD">
+    Display a message before login prompt:
+
+    ```cisco
+    banner motd #<text>#
+    ```
+
+    - Shown on SSH and console login
+    - Includes pre-loaded legal warning
+    - Delimiter `#` is automatically replaced if found in text
+  </Accordion>
+</AccordionGroup>
+
+**Security Commands Application:**
+
+```python
+# Applied AT THE END to avoid closing active SSH session
+sec_cmds = build_security_commands(
+    enable_pw   = enable_pw,
+    attempts    = login_attempts,
+    window      = login_window,
+    block_for   = login_block_for,
+    banner_text = banner_text,
+)
+if sec_cmds:
+    if log_fn:
+        log_fn(f"[Seguridad] {len(sec_cmds)} comandos de seguridad...")
+    cmds += sec_cmds
+```
+
+Source: [command_builder.py:261-275](file:///home/daytona/workspace/source/core/command_builder.py#L261-L275)
+
+<Warning>
+**Applied Last:** Security commands are sent at the END of configuration to prevent locking out the active SSH session.
+</Warning>
+
+---
+
+### ⑨ GRE/IPsec
+
+**Purpose:** Configure encrypted GRE tunnels over IPsec (v2.2 feature)
+
+#### Why GRE + IPsec?
+
+<Info>
+IPsec alone cannot transport multicast/broadcast traffic (required for OSPF, EIGRP).
+
+GRE creates a point-to-point tunnel that supports multicast, then IPsec encrypts the entire GRE tunnel.
+</Info>
+
+From the README:
+> "IPsec no puede transportar tráfico multicast/broadcast por sí solo (necesario para OSPF, EIGRP). GRE crea un túnel punto a punto que sí lo permite, y luego IPsec cifra ese túnel completo."
+
+Source: [README.md:94-99](file:///home/daytona/workspace/source/README.md#L94-L99)
+
+#### Configuration
+
+**GRE Tunnel Parameters:**
+- **Tunnel Interface**: e.g., Tunnel0
+- **Source**: Local interface or IP
+- **Destination**: Remote peer IP
+- **Tunnel IP**: IP address for the tunnel interface
+
+**IPsec Parameters:**
+- **IKE (Phase 1)**: IKEv1 with DH Group 2 (compatible with vios_l2 15.2)
+- **IPsec (Phase 2)**: ESP with AES-256 encryption
+- **Pre-Shared Key**: Shared secret for authentication
+
+**Command Generation:**
+
+```python
+if gre_tunnels:
+    gre_cmds = build_gre_ipsec_commands(gre_tunnels)
+    if log_fn:
+        log_fn(f"[GRE/IPsec] {len(gre_cmds)} comandos de túnel...")
+    cmds += gre_cmds
+```
+
+Source: [command_builder.py:277-284](file:///home/daytona/workspace/source/core/command_builder.py#L277-L284)
+
+<Note>
+Tunnels are configured **after routes** so the system can properly resolve tunnel source interfaces.
+</Note>
+
+---
+
+## Automatic Protections
+
+The app includes several safety mechanisms:
+
+| Protection | Detail |
+|------------|--------|
+| `GigabitEthernet0/0` | Never modified (management uplink) |
+| SSH / VTY / crypto key | Never touched (preserves remote access) |
+| Layer 2 switches | Automatically skip `ip routing` and IP SVIs |
+| Cleanup | Only removes what the app configured; preserves existing routes and OSPF |
+| Enable secret | Applied **at the end** to avoid closing active SSH session |
+
+Source: [README.md:130-139](file:///home/daytona/workspace/source/README.md#L130-L139)
+
+## Best Practices
+
+<Steps>
+  <Step title="Start with Test Switch">
+    Test the complete workflow on a single switch before mass deployment
+  </Step>
+
+  <Step title="Save Configurations">
+    Export to JSON (Tab ⑦) before making major changes
+  </Step>
+
+  <Step title="Use Connection Test">
+    Always test connectivity (Tab ①) before execution
+  </Step>
+
+  <Step title="Monitor Logs">
+    Watch the real-time log during execution for errors
+  </Step>
+
+  <Step title="Backup First">
+    Download running-configs before applying new configurations
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Authentication Failures">
+    **Symptoms:**
+    ```
+    ✘ SW-CDMX — Error de Autenticación
+    ```
+
+    **Solutions:**
+    - Verify username/password in Tab ①
+    - Check enable secret is correct
+    - Ensure user has privilege level 15
+    - Test manually: `ssh user@switch-ip`
+  </Accordion>
+
+  <Accordion title="Commands Timing Out">
+    **Symptoms:**
+    ```
+    ✘ SW-CDMX — Timeout
+    ```
+
+    **Solutions:**
+    - Increase `global_delay_factor` in `connector.py`
+    - Check network latency
+    - Verify switch isn't overloaded (`show processes cpu`)
+    - Reduce number of simultaneous deployments
+  </Accordion>
+
+  <Accordion title="Invalid Commands on L2 Switch">
+    **Symptoms:**
+    ```
+    % Invalid input detected at '^' marker.
+    ```
+
+    **Solutions:**
+    - Verify Layer 2/3 detection in logs
+    - Check `show ip route connected` output manually
+    - May need to disable routing features in Tab ④
+  </Accordion>
+
+  <Accordion title="Configuration Not Saved">
+    **Symptoms:**
+    - Config works but disappears after reboot
+
+    **Solutions:**
+    - Check logs for `write memory` command
+    - Manually verify: `show startup-config`
+    - May need to manually: `copy running-config startup-config`
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the project structure
+  </Card>
+
+  <Card title="Layer 2 vs Layer 3" icon="layer-group" href="/concepts/layer2-vs-layer3">
+    Learn about automatic detection
+  </Card>
+</CardGroup>

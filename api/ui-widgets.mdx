@@ -1,0 +1,358 @@
+---
+title: 'Widget Factory Functions'
+description: 'Reusable Tkinter widget factory functions with consistent theming'
+---
+
+## Overview
+
+The `ui.widgets` module provides factory functions for creating Tkinter widgets with consistent styling across the application. All widgets follow a unified dark theme with customizable colors, fonts, and borders.
+
+**Source:** `~/workspace/source/ui/widgets.py`
+
+## Theme Constants
+
+Widgets use these constants from `constants.py`:
+- `BG` - Main background (darkest)
+- `BG2` - Panel background
+- `BG3` - Input field background
+- `ACCENT` - Primary accent color (blue)
+- `ACCENT2` - Action color (orange/red)
+- `SUCCESS` - Success color (green)
+- `TEXT` - Primary text color
+- `TEXT2` - Secondary text color
+- `BORDER` - Border color
+
+---
+
+## Global Styling
+
+### apply_style
+
+```python
+def apply_style(root)
+```
+
+Configures the global ttk theme for the application. **Must be called once** during main window initialization.
+
+**Customizes:**
+- Notebook (tab container)
+- Tabs
+- Frame & LabelFrame
+- Combobox
+- Checkbutton
+- Scrollbar
+
+<ParamField path="root" type="tk.Tk">
+  The root Tkinter window
+</ParamField>
+
+**Example:**
+```python
+root = tk.Tk()
+apply_style(root)
+```
+
+---
+
+## Basic Widgets
+
+### make_frame
+
+```python
+def make_frame(parent) -> tk.Frame
+```
+
+Creates a simple Frame with panel background (BG2).
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container widget
+</ParamField>
+
+**Returns:** `tk.Frame` with `bg=BG2`
+
+---
+
+### make_label
+
+```python
+def make_label(parent, text, fg=TEXT2, font=("Consolas", 9), **kw) -> tk.Label
+```
+
+Creates a styled label with customizable text color.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="text" type="str">
+  Label text content
+</ParamField>
+
+<ParamField path="fg" type="str" default="TEXT2">
+  Foreground (text) color. Override for status colors (SUCCESS, WARN, etc.)
+</ParamField>
+
+<ParamField path="font" type="tuple" default="('Consolas', 9)">
+  Font family and size
+</ParamField>
+
+<ParamField path="**kw" type="dict">
+  Additional keyword arguments passed to tk.Label
+</ParamField>
+
+**Returns:** Styled `tk.Label`
+
+---
+
+### make_entry
+
+```python
+def make_entry(parent, width=18, show="", state="normal") -> tk.Entry
+```
+
+Creates a text input field with focus highlighting.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="width" type="int" default="18">
+  Width in characters
+</ParamField>
+
+<ParamField path="show" type="str" default="">
+  Character to display instead of actual text. Use `"*"` for password fields
+</ParamField>
+
+<ParamField path="state" type="str" default="normal">
+  Widget state: `"normal"` or `"disabled"`
+</ParamField>
+
+**Styling:**
+- Background: `BG3`
+- Text color: `TEXT`
+- Insert cursor: `TEXT`
+- Highlight on focus: `ACCENT`
+- Border (inactive): `BORDER`
+
+**Returns:** `tk.Entry`
+
+---
+
+### make_button
+
+```python
+def make_button(parent, text, cmd, color=ACCENT2, fg="white", **kw) -> tk.Button
+```
+
+Creates a styled button with hand cursor and customizable colors.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="text" type="str">
+  Button label text
+</ParamField>
+
+<ParamField path="cmd" type="callable">
+  Command function to execute on click
+</ParamField>
+
+<ParamField path="color" type="str" default="ACCENT2">
+  Button background color (default: orange/red action color)
+</ParamField>
+
+<ParamField path="fg" type="str" default="white">
+  Button text color
+</ParamField>
+
+<ParamField path="**kw" type="dict">
+  Additional keyword arguments passed to tk.Button
+</ParamField>
+
+**Styling:**
+- Font: `Consolas 9 bold`
+- Cursor: `hand2` (pointer)
+- Padding: `10px (horizontal)` × `4px (vertical)`
+- Active background: `BG3`
+- Flat relief
+
+**Returns:** `tk.Button`
+
+---
+
+### make_listbox
+
+```python
+def make_listbox(parent, width=70, height=5) -> tk.Listbox
+```
+
+Creates a listbox with dark theme styling.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="width" type="int" default="70">
+  Width in characters
+</ParamField>
+
+<ParamField path="height" type="int" default="5">
+  Height in rows
+</ParamField>
+
+**Styling:**
+- Background: `BG` (darkest)
+- Text color: `ACCENT` (blue)
+- Selection background: `ACCENT2`
+- Selection foreground: `white`
+- Font: `Consolas 8`
+
+**Returns:** `tk.Listbox`
+
+---
+
+## Container Widgets
+
+### make_labelframe
+
+```python
+def make_labelframe(parent, text) -> ttk.LabelFrame
+```
+
+Creates a labeled frame with title in accent color.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="text" type="str">
+  Frame title/label text
+</ParamField>
+
+**Styling:**
+- Title color: `ACCENT`
+- Border: `BORDER`
+- Padding: `8px (horizontal)` × `4px (vertical)`
+
+**Returns:** `ttk.LabelFrame`
+
+---
+
+### make_scrolled_text
+
+```python
+def make_scrolled_text(parent, width=88, height=6, fg="#00ff41") -> scrolledtext.ScrolledText
+```
+
+Creates a text area with integrated scrollbar.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="width" type="int" default="88">
+  Width in characters
+</ParamField>
+
+<ParamField path="height" type="int" default="6">
+  Height in rows
+</ParamField>
+
+<ParamField path="fg" type="str" default="#00ff41">
+  Text color. Default is terminal green for console logs
+</ParamField>
+
+**Styling:**
+- Background: `#010409` (very dark)
+- Font: `Consolas 8`
+- Insert cursor: `TEXT`
+- Border: `BORDER`
+
+**Returns:** `scrolledtext.ScrolledText`
+
+---
+
+### make_title
+
+```python
+def make_title(parent, text)
+```
+
+Creates a large section title (centered, bold, orange/red).
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+<ParamField path="text" type="str">
+  Title text
+</ParamField>
+
+**Styling:**
+- Font: `Consolas 12 bold`
+- Color: `ACCENT2` (orange/red)
+- Padding: `10px (top)` × `4px (bottom)`
+- Automatically packed with `pack()`
+
+**Returns:** `None` (widget is auto-packed)
+
+---
+
+### make_scrolled_frame
+
+```python
+def make_scrolled_frame(parent) -> tk.Frame
+```
+
+Creates a frame with vertical scrolling support using Canvas + Scrollbar.
+
+<ParamField path="parent" type="tk.Widget">
+  Parent container
+</ParamField>
+
+**Implementation:**
+- Uses `Canvas` with embedded `Frame`
+- Vertical `ttk.Scrollbar`
+- Auto-recalculates scroll region on `<Configure>` event
+- Mouse wheel scrolling enabled via `<MouseWheel>` binding
+
+**Returns:** `tk.Frame` - The **inner frame** where widgets should be placed
+
+**Usage:**
+```python
+scrolled = make_scrolled_frame(parent)
+make_label(scrolled, "Content 1").pack()
+make_label(scrolled, "Content 2").pack()
+# ... more content
+```
+
+<Info>
+  Useful for tabs with long vertical content (VLANs, QoS, Routing).
+</Info>
+
+---
+
+## Theming Philosophy
+
+<AccordionGroup>
+  <Accordion title="Why factory functions?">
+    - **Centralized styling**: Change all button colors by editing `make_button()` once
+    - **Consistency**: Every widget across all tabs shares the same visual language
+    - **Rapid prototyping**: Build complex UIs with minimal boilerplate
+  </Accordion>
+
+  <Accordion title="Color scheme">
+    The app uses a **dark theme** inspired by GitHub Dark:
+    - Background layers: BG → BG2 → BG3 (darkest to lighter)
+    - Primary accent: Blue (`#58a6ff`) for interactive elements
+    - Action color: Orange/red for destructive or primary actions
+    - Success: Green for confirmations
+    - Text hierarchy: TEXT (bright) vs TEXT2 (dimmed)
+  </Accordion>
+
+  <Accordion title="Mouse wheel scrolling">
+    The `make_scrolled_frame()` binds `<MouseWheel>` globally with `bind_all()`. This may conflict with other scrollable widgets. For production use, consider binding only to the canvas or using a more scoped event handler.
+  </Accordion>
+</AccordionGroup>

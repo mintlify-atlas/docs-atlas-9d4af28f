@@ -1,0 +1,500 @@
+---
+title: Command Generation
+description: How IOS commands are generated from GUI configuration
+---
+
+## Overview
+
+SECURE-BRANCH-lac generates Cisco IOS commands dynamically from your GUI configuration using the `command_builder.py` module. This page explains the command generation pipeline and how configuration translates into device commands.
+
+## Build Pipeline
+
+The `build_commands()` function orchestrates the entire command generation process:
+
+```python
+def build_commands(
+    is_l3: bool,
+    chk_intervlan: bool,
+    dhcp_pools: list,
+    vlans_data: list,
+    static_routes: list,
+    chk_ospf: bool,
+    ospf_pid: str,
+    ospf_networks: list,
+    qos_classes: list,
+    pol_entries: list,
+    pol_name: str,
+    service_policies: list,
+    enable_pw: str = "",
+    login_attempts: str = "",
+    login_window: str = "",
+    login_block_for: str = "",
+    banner_text: str = "",
+    gre_tunnels: list = None,
+    log_fn=None,
+) -> list:
+```
+
+**Source:** `core/command_builder.py:53-76`
+
+## Command Generation Order
+
+Commands are generated in a specific order to ensure proper dependency resolution:
+
+<Accordion title="1. IP Routing (Layer 3 only)">
+  Layer 3 switches receive these foundational commands:
+
+  ```python
+  if chk_intervlan and is_l3:
+      cmds += ["ip routing", "service dhcp"]
+  elif not is_l3 and log_fn:
+      log_fn("  [INFO] Switch L2 detectado → se omite 'ip routing' y SVIs con IP")
+  ```
+
+  **Source:** `core/command_builder.py:108-113`
+</Accordion>
+
+<Accordion title="2. DHCP Pools (Layer 3 only)">
+  DHCP pools are only configured on Layer 3 switches. Layer 2 switches rely on router-on-a-stick:
+
+  ```python
+  if is_l3:
+      for pool in dhcp_pools:
+          cmds.append(f"ip dhcp excluded-address {pool['gw']}")   # exclude gateway
+          cmds += [
+              f"ip dhcp pool {pool['name']}",
+              f"network {pool['net']} {pool['mask']}",
+              f"default-router {pool['gw']}",
+              "dns-server 8.8.8.8",
+              "exit"
+          ]
+  ```
+
+  **Source:** `core/command_builder.py:118-127`
+
+  <Note>
+    The gateway IP is automatically excluded from the DHCP range to prevent conflicts.
+  </Note>
+</Accordion>
+
+<Accordion title="3. VLANs">
+  VLANs are created using IOS 15.x configuration mode syntax:
+
+  ```python
+  for v in vlans_data:
+      cmds.append(f"vlan {v['id']}")
+      if v['name']:
+          cmds.append(f"name {v['name']}")
+      cmds.append("exit")
+  ```
+
+  **Source:** `core/command_builder.py:131-135`
+
+  <Warning>
+    IOS 15.x uses `conf t → vlan X → name Y`, NOT the deprecated `vlan database` mode.
+  </Warning>
+</Accordion>
+
+<Accordion title="4. Port Assignment">
+  The `expand_ports()` function normalizes port notation before assignment:
+
+  ```python
+  def expand_ports(ports_str: str) -> str:
+      """
+      Normalizes interface names to the full form expected by IOS 15.x.
+
+      Accepts short or long notation:
+        - "Gi0/1-3"     → "GigabitEthernet0/1-3"
+        - "Gi0/1,Gi0/3" → "GigabitEthernet0/1, GigabitEthernet0/3"
+        - "Fa0/2"       → "FastEthernet0/2"
+      """
+  ```
+
+  **Source:** `core/command_builder.py:19-30`
+
+  Port assignment uses `interface range` for multiple ports:
+
+  ```python
+  ports_norm = expand_ports(v['ports'])
+  is_range = ',' in ports_norm or re.search(r'-\d+$', ports_norm.split('/')[-1])
+  iface_cmd = f"interface range {ports_norm}" if is_range else f"interface {ports_norm}"
+  cmds.append(iface_cmd)
+
+  if v['port_mode'] == 'trunk':
+      cmds += [
+          "switchport trunk encapsulation dot1q",
+          "switchport mode trunk",
+          f"switchport trunk allowed vlan add {v['id']}",
+          "no shutdown",
+          "exit"
+      ]
+  else:
+      # Access mode: single VLAN per port
+      cmds += [
+          "switchport mode access",
+          f"switchport access vlan {v['id']}",
+          "spanning-tree portfast",  # Skip 30-sec STP delay for endpoints
+          "no shutdown",
+          "exit"
+      ]
+  ```
+
+  **Source:** `core/command_builder.py:142-167`
+</Accordion>
+
+<Accordion title="5. Security ACLs">
+  Extended named ACLs are created for VLANs with security rules:
+
+  ```python
+  for v in vlans_data:
+      acl_name  = f"SEGURIDAD_VLAN_{v['id']}"
+      needs_acl = v['block_social'] or v['custom_acl']
+      if needs_acl:
+          cmds.append(f"ip access-list extended {acl_name}")
+          if v['block_social']:
+              # Block Facebook and Twitter by known public IPs (HTTPS/443)
+              cmds += [
+                  "deny tcp any host 157.240.22.35 eq 443",   # Facebook
+                  "deny tcp any host 104.244.42.1  eq 443",   # Twitter/X
+              ]
+          if v['custom_acl']:
+              # User-provided custom rules (one per line)
+              cmds += [r.strip() for r in v['custom_acl'].split('\n') if r.strip()]
+          cmds += ["permit ip any any", "exit"]   # permit everything else
+  ```
+
+  **Source:** `core/command_builder.py:172-186`
+</Accordion>
+
+<Accordion title="6. SVIs (Layer 3 only)">
+  Switch Virtual Interfaces act as the gateway for each VLAN:
+
+  ```python
+  if is_l3:
+      for v in vlans_data:
+          acl_name  = f"SEGURIDAD_VLAN_{v['id']}"
+          needs_acl = v['block_social'] or v['custom_acl']
+          svi_ip = svi_mask = None
+          if v['dhcp_idx'] is not None:
+              # Take gateway IP from associated DHCP pool
+              p = dhcp_pools[v['dhcp_idx']]
+              svi_ip, svi_mask = p['gw'], p['mask']
+          if svi_ip or needs_acl:
+              cmds.append(f"interface vlan {v['id']}")
+              if svi_ip:
+                  cmds += [f"ip address {svi_ip} {svi_mask}", "no shutdown"]
+              if needs_acl:
+                  # Apply ACL in inbound direction on SVI
+                  cmds.append(f"ip access-group {acl_name} in")
+              cmds.append("exit")
+  ```
+
+  **Source:** `core/command_builder.py:191-207`
+</Accordion>
+
+<Accordion title="7. Static Routes">
+  ```python
+  for rt in static_routes:
+      cmds.append(f"ip route {rt['dest']} {rt['mask']} {rt['nexthop']}")
+  ```
+
+  **Source:** `core/command_builder.py:211-212`
+
+  <Info>
+    Includes default route (0.0.0.0/0 → R1) and inter-branch routes.
+  </Info>
+</Accordion>
+
+<Accordion title="8. OSPF">
+  OSPF networks are announced so the router can NAT them to the internet:
+
+  ```python
+  if chk_ospf and ospf_networks:
+      pid = ospf_pid.strip() or "1"
+      cmds.append(f"router ospf {pid}")
+      for n in ospf_networks:
+          cmds.append(f"network {n['network']} {n['wildcard']} area {n['area']}")
+      cmds.append("exit")
+  ```
+
+  **Source:** `core/command_builder.py:217-222`
+
+  <Warning>
+    Without OSPF announcement, new VLANs won't have internet access via OSPF-enabled routers.
+  </Warning>
+</Accordion>
+
+<Accordion title="9. QoS (class-map, policy-map, service-policy)">
+  **Class-maps** identify traffic types:
+
+  ```python
+  for cls in qos_classes:
+      cmds += [
+          f"class-map {cls['match_type']} {cls['name']}",
+          f"match {cls['criteria']} {cls['value']}",
+          "exit"
+      ]
+  ```
+
+  **Policy-maps** define actions for each class:
+
+  ```python
+  if pol_entries and pol_name:
+      cmds.append(f"policy-map {pol_name}")
+      for pe in pol_entries:
+          cmds.append(f"class {pe['class']}")
+          a, v = pe['action'], pe['value']
+          if   a == "police rate":     cmds += [f"police rate {v} bps", "exit"]
+          elif a == "shape average":   cmds += [f"shape average {v}",   "exit"]
+          elif a == "set dscp":        cmds += [f"set dscp {v}",        "exit"]
+          else:                        cmds += [f"{a} {v}",             "exit"]
+      cmds.append("exit")
+  ```
+
+  **Service-policies** apply the policy to interfaces:
+
+  ```python
+  for sp in service_policies:
+      cmds += [
+          f"interface {sp['iface']}",
+          f"service-policy {sp['dir']} {sp['policy']}",
+          "exit"
+      ]
+  ```
+
+  **Source:** `core/command_builder.py:226-259`
+
+  <Tip>
+    QoS actions: `priority` (high-priority queue), `bandwidth` (guaranteed minimum), `police` (rate limit), `shape` (smooth traffic), `set dscp` (re-mark packets).
+  </Tip>
+</Accordion>
+
+<Accordion title="10. Security (enable secret, login block-for, banner)">
+  Security commands are applied **at the end** to avoid disrupting the active SSH session:
+
+  ```python
+  sec_cmds = build_security_commands(
+      enable_pw   = enable_pw,
+      attempts    = login_attempts,
+      window      = login_window,
+      block_for   = login_block_for,
+      banner_text = banner_text,
+  )
+  if sec_cmds:
+      if log_fn:
+          log_fn(f"  [Seguridad] {len(sec_cmds)} comandos de seguridad...")
+      cmds += sec_cmds
+  ```
+
+  **Source:** `core/command_builder.py:265-275`
+</Accordion>
+
+<Accordion title="11. GRE over IPsec">
+  Tunnel commands are configured after routes so the system can resolve the source interface:
+
+  ```python
+  if gre_tunnels:
+      gre_cmds = build_gre_ipsec_commands(gre_tunnels)
+      if log_fn:
+          log_fn(f"  [GRE/IPsec] {len(gre_cmds)} comandos de túnel...")
+      cmds += gre_cmds
+  ```
+
+  **Source:** `core/command_builder.py:280-284`
+</Accordion>
+
+## Cleanup Command Generation
+
+The `build_cleanup_commands()` function generates `no ...` commands to remove only what the app configured:
+
+```python
+def build_cleanup_commands(nc, static_routes: list, ospf_networks: list, log_fn=None) -> list:
+    """
+    Reads the running-config and generates 'no ...' commands to clean up
+    only what this application may have previously configured.
+
+    Protects:
+      - SSH, users, VTY, crypto key (remote access)
+      - Uplink interface (UPLINK_IFACE)
+      - Static routes and OSPF networks NOT configured by this app
+      - VLAN 1 (native, never deleted)
+    """
+```
+
+**Source:** `core/command_builder.py:289-310`
+
+### What Gets Cleaned
+
+<Accordion title="DHCP Pools and Exclusions">
+  ```python
+  for p in re.findall(r'^ip dhcp pool (\S+)', raw, re.MULTILINE):
+      cleanup.append(f"no ip dhcp pool {p}")
+  for e in re.findall(r'^ip dhcp excluded-address (.+)', raw, re.MULTILINE):
+      cleanup.append(f"no ip dhcp excluded-address {e.strip()}")
+  ```
+
+  **Source:** `core/command_builder.py:317-320`
+</Accordion>
+
+<Accordion title="Security ACLs (app-created only)">
+  Only ACLs with the `SEGURIDAD_VLAN_` prefix are removed:
+
+  ```python
+  for a in re.findall(r'^ip access-list extended (SEGURIDAD_VLAN_\S+)', raw, re.MULTILINE):
+      cleanup.append(f"no ip access-list extended {a}")
+  ```
+
+  **Source:** `core/command_builder.py:323-325`
+</Accordion>
+
+<Accordion title="QoS Configuration">
+  Service policies are removed from interfaces first, then policy-maps and class-maps:
+
+  ```python
+  # Remove service-policy from interfaces
+  for iface, body in re.findall(r'^interface (\S+)\n((?:[ \t].+\n)*)', raw, re.MULTILINE):
+      if 'service-policy' in body:
+          for d, pm in re.findall(r'service-policy (\S+) (\S+)', body):
+              cleanup += [f"interface {iface}", f"no service-policy {d} {pm}", "exit"]
+
+  # Remove policy-maps and class-maps
+  for pm in re.findall(r'^policy-map (\S+)', raw, re.MULTILINE):
+      cleanup.append(f"no policy-map {pm}")
+  for cm in re.findall(r'^class-map \S+ (\S+)', raw, re.MULTILINE):
+      cleanup.append(f"no class-map {cm}")
+  ```
+
+  **Source:** `core/command_builder.py:328-337`
+</Accordion>
+
+<Accordion title="SVIs (except VLAN 1)">
+  ```python
+  for iface, vid, body in re.findall(
+          r'^interface (Vlan(\d+))\n((?:[ \t].+\n)*)', raw, re.MULTILINE):
+      if vid == "1":
+          continue   # VLAN 1 is management VLAN, never touched
+      if 'ip address' in body:
+          cleanup += [f"interface {iface}", "no ip address", "exit"]
+      if 'ip access-group' in body:
+          ag = re.search(r'ip access-group (\S+)', body)
+          if ag:
+              cleanup += [f"interface {iface}", f"no ip access-group {ag.group(1)} in", "exit"]
+  ```
+
+  **Source:** `core/command_builder.py:340-350`
+</Accordion>
+
+<Accordion title="Port Assignments (except uplink)">
+  The uplink interface `GigabitEthernet0/0` is **never** modified:
+
+  ```python
+  for iface, body in re.findall(
+          r'^interface (\S+)\n((?:[ \t].+\n)*)', raw, re.MULTILINE):
+      if 'Vlan' in iface:
+          continue   # skip SVIs (handled above)
+      if UPLINK_IFACE.lower() in iface.lower():
+          continue   # NEVER touch the uplink
+      if 'switchport access vlan' in body:
+          cleanup += [f"interface {iface}", "no switchport access vlan",
+                      "no switchport mode", "exit"]
+      elif 'switchport mode trunk' in body:
+          cleanup += [f"interface {iface}", "no switchport mode trunk", "exit"]
+  ```
+
+  **Source:** `core/command_builder.py:353-364`
+
+  <Warning>
+    The uplink constant is defined in `constants.py:13` as `GigabitEthernet0/0`.
+  </Warning>
+</Accordion>
+
+<Accordion title="VLANs (except VLAN 1)">
+  ```python
+  vlan_raw = nc.send_command("show vlan brief", delay_factor=2)
+  for vid in re.findall(r'^(\d+)\s+\S+\s+active', vlan_raw, re.MULTILINE):
+      if vid != "1":
+          cleanup.append(f"no vlan {vid}")
+  ```
+
+  **Source:** `core/command_builder.py:368-371`
+
+  <Info>
+    `no vlan X` automatically removes the VLAN from all assigned ports in IOS 15.x.
+  </Info>
+</Accordion>
+
+<Accordion title="Static Routes (app-configured only)">
+  Only routes that the app previously configured are removed:
+
+  ```python
+  for rt in static_routes:
+      rt_str = f"{rt['dest']} {rt['mask']} {rt['nexthop']}"
+      if f"ip route {rt_str}" in raw:   # verify it actually exists
+          cleanup.append(f"no ip route {rt_str}")
+  ```
+
+  **Source:** `core/command_builder.py:376-379`
+
+  <Tip>
+    Pre-existing routes (e.g., manual default route to R1) are preserved to protect switch connectivity.
+  </Tip>
+</Accordion>
+
+<Accordion title="OSPF Networks (app-configured only)">
+  The OSPF process is never deleted, only the networks configured by the app:
+
+  ```python
+  pid_m = re.search(r'^router ospf (\d+)', raw, re.MULTILINE)
+  if pid_m and ospf_networks:
+      pid = pid_m.group(1)
+      for n in ospf_networks:
+          net_str = f"{n['network']} {n['wildcard']} area {n['area']}"
+          if net_str in raw:
+              cleanup += [f"router ospf {pid}", f"no network {net_str}", "exit"]
+  ```
+
+  **Source:** `core/command_builder.py:384-390`
+
+  <Note>
+    Pre-existing OSPF networks (uplinks, loopbacks) are never removed.
+  </Note>
+</Accordion>
+
+## Layer 2 vs Layer 3 Detection
+
+The app automatically detects switch capabilities to avoid sending incompatible commands:
+
+```python
+def detect_l3(nc) -> bool:
+    """
+    Detects if the switch has ip routing active (Layer 3) or not (Layer 2).
+
+    Strategy: executes 'show ip route connected' and searches for lines
+    beginning with 'C' (directly connected route). If found, the switch routes.
+    """
+    try:
+        out = nc.send_command("show ip route connected", delay_factor=2)
+        return bool(re.search(r'^C\s+', out, re.MULTILINE))
+    except Exception:
+        return False   # If it fails, assume L2 for safety
+```
+
+**Source:** `core/connector.py:50-69`
+
+<Info>
+Layer 2 switches skip:
+- `ip routing` and `service dhcp` commands
+- DHCP pool configuration (relies on router-on-a-stick)
+- SVI IP address assignment (SVIs exist but have no IP)
+</Info>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Protections" icon="shield" href="/advanced/protections">
+    Automatic safeguards during command generation
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Solve common command generation issues
+  </Card>
+</CardGroup>

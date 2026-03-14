@@ -1,0 +1,328 @@
+---
+title: Security Configuration
+description: Secure device access with enable secret, login blocking, and MOTD banners
+icon: shield
+---
+
+This guide covers **Tab ⑧** of the configurator: hardening switch security with password protection, brute-force prevention, and legal notices.
+
+## Security Features Overview
+
+The tool configures three essential security mechanisms:
+
+<CardGroup cols={3}>
+  <Card title="Enable Secret" icon="key">
+    Secure privileged mode with MD5 hashing
+  </Card>
+  <Card title="Login Block-for" icon="ban">
+    Auto-block SSH after failed login attempts
+  </Card>
+  <Card title="Banner MOTD" icon="message">
+    Display legal warning before login
+  </Card>
+</CardGroup>
+
+---
+
+## Enable Secret (MD5 Encryption)
+
+Protect privileged EXEC mode (`enable`) with a strongly encrypted password.
+
+<Steps>
+  <Step title="Enter the enable password">
+    Type the password in the **Contraseña** field.
+
+    <Info>
+      The password is displayed as `****` (masked input) for security.
+    </Info>
+  </Step>
+
+  <Step title="IOS command generated">
+    ```ios
+    enable secret YourStrongPassword
+    ```
+
+    <Note>
+      **Why `enable secret` and not `enable password`?**
+      
+      - `enable secret`: Uses **MD5 hash (type 5)** — irreversible, secure
+      - `enable password`: Uses **Vigenère cipher (type 7)** — easily reversible, insecure
+
+      **Always use `enable secret` on production devices!**
+    </Note>
+  </Step>
+</Steps>
+
+### Example Running-Config Output
+
+```ios Config Comparison
+! ── SECURE (enable secret) ──────────────────────────────────
+enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0
+
+! ── INSECURE (enable password) ─────────────────────────────
+enable password 7 0822455D0A16
+```
+
+<Warning>
+  Type 7 passwords can be **decoded in seconds** using online tools!
+</Warning>
+
+---
+
+## Login Block-for (Brute-Force Protection)
+
+Automatically block SSH/VTY access after too many failed login attempts.
+
+### How It Works
+
+The `login block-for` feature monitors authentication attempts and **temporarily locks out** an IP address if it exceeds the failure threshold.
+
+<Steps>
+  <Step title="Configure thresholds">
+    | Field | Default | Description |
+    |-------|---------|-------------|
+    | **Intentos máx** | `5` | Maximum failed attempts before blocking |
+    | **Ventana (seg)** | `60` | Time window (seconds) to count failures |
+    | **Bloquear (seg)** | `120` | How long to block access after threshold |
+  </Step>
+
+  <Step title="Generated IOS commands">
+    ```ios
+    login block-for 120 attempts 5 within 60
+    login on-failure log
+    ```
+
+    **Behavior**:
+    - If **5 failed attempts** occur within **60 seconds**
+    - The source IP is **blocked for 120 seconds** (2 minutes)
+    - All failures are **logged to syslog** (`login on-failure log`)
+  </Step>
+</Steps>
+
+### Example Scenario
+
+<Accordion title="Brute-force attack simulation">
+  **Attacker actions**:
+  ```bash
+  ssh admin@192.168.100.10  # Attempt 1 (fail)
+  ssh admin@192.168.100.10  # Attempt 2 (fail)
+  ssh admin@192.168.100.10  # Attempt 3 (fail)
+  ssh admin@192.168.100.10  # Attempt 4 (fail)
+  ssh admin@192.168.100.10  # Attempt 5 (fail)
+  ssh admin@192.168.100.10  # BLOCKED for 120 seconds
+  ```
+
+  **Switch response**:
+  ```
+  % Login disabled for 120 seconds due to too many failed login attempts
+  ```
+
+  **Syslog entry**:
+  ```
+  %SEC_LOGIN-5-LOGIN_FAILURE: Login failed for user admin from 203.0.113.50
+  ```
+</Accordion>
+
+<Info>
+  **Legitimate users**: After the block period expires (120 seconds), they can attempt to log in again.
+</Info>
+
+<Tip>
+  **Recommended values**:
+  - Corporate network: `5 attempts / 60 seconds / 300 sec block`
+  - High-security: `3 attempts / 30 seconds / 600 sec block`
+</Tip>
+
+---
+
+## Banner MOTD (Message of the Day)
+
+Display a legal warning **before** the login prompt. This is important for:
+
+- **Legal protection**: Establish "authorized use only" policy
+- **Compliance**: Many regulations (PCI-DSS, HIPAA, SOC 2) require login banners
+- **Deterrence**: Warn unauthorized users that access is monitored
+
+<Steps>
+  <Step title="Customize the banner text">
+    Edit the multi-line text box with your organization's legal notice.
+
+    **Default pre-loaded text**:
+    ```
+    **********************************************************************
+    *  ACCESO RESTRINGIDO - Solo personal autorizado                     *
+    *  Toda actividad es monitoreada y registrada.                       *
+    *  El acceso no autorizado es un delito y sera perseguido por ley.   *
+    **********************************************************************
+    ```
+
+    <Warning>
+      **Do NOT use the `#` character** in your banner text!
+      
+      IOS uses `#` as the delimiter for the banner command. The tool will **automatically replace** `#` with `*` to prevent syntax errors.
+    </Warning>
+  </Step>
+
+  <Step title="Generated IOS command">
+    ```ios
+    banner motd #**********************************************************************
+    *  ACCESO RESTRINGIDO - Solo personal autorizado                     *
+    *  Toda actividad es monitoreada y registrada.                       *
+    *  El acceso no autorizado es un delito y sera perseguido por ley.   *
+    **********************************************************************#
+    ```
+
+    The delimiter `#` wraps the banner text.
+  </Step>
+</Steps>
+
+### When the Banner Appears
+
+The MOTD banner is displayed:
+
+✅ **Before** the login prompt on SSH  
+✅ **Before** the login prompt on Telnet  
+✅ **Before** the login prompt on console access
+
+**Example SSH session**:
+```bash
+$ ssh admin@192.168.100.10
+
+**********************************************************************
+*  ACCESO RESTRINGIDO - Solo personal autorizado                     *
+*  Toda actividad es monitoreada y registrada.                       *
+*  El acceso no autorizado es un delito y sera perseguido por ley.   *
+**********************************************************************
+
+Password: _
+```
+
+---
+
+## Preview Security Commands
+
+Before deploying, you can **preview** the exact IOS commands that will be generated:
+
+<Steps>
+  <Step title="Click the preview button">
+    Click **"👁 Ver comandos que se generarán"**
+  </Step>
+
+  <Step title="Review the output">
+    A message box displays all security commands:
+
+    ```ios
+    enable secret MySecurePassword123
+    login block-for 120 attempts 5 within 60
+    login on-failure log
+    banner motd #**********************************************************************
+    *  ACCESO RESTRINGIDO - Solo personal autorizado                     *
+    *  Toda actividad es monitoreada y registrada.                       *
+    *  El acceso no autorizado es un delito y sera perseguido por ley.   *
+    **********************************************************************#
+    ```
+  </Step>
+</Steps>
+
+---
+
+## When Security Commands Are Applied
+
+<Info>
+  Security commands are applied **at the end** of the configuration deployment.
+  
+  This prevents closing the active SSH session during the push.
+</Info>
+
+**Deployment order** (from `core/command_builder.py:265-275`):
+
+1. VLANs and ports
+2. DHCP pools
+3. Routing (static routes, OSPF)
+4. QoS (class-maps, policy-maps, service-policy)
+5. **Security** ← Applied last
+6. GRE over IPsec
+
+<Note>
+  The `enable secret` change is **immediate** but does NOT disconnect your current session.
+  
+  The new password takes effect for **new sessions** only.
+</Note>
+
+---
+
+## Best Practices
+
+<Accordion title="Use strong enable secrets">
+  **Weak password**:
+  ```
+  enable secret cisco
+  ```
+  ❌ Common, in rainbow tables, cracked instantly
+
+  **Strong password**:
+  ```
+  enable secret 9k!mP$7xQ2@vL
+  ```
+  ✅ 14+ characters, mixed case, numbers, symbols
+</Accordion>
+
+<Accordion title="Tune login block-for for your environment">
+  **High-traffic environment** (many legitimate users):
+  - Increase attempts: `10 attempts within 120 seconds`
+  - Shorter block: `60 seconds`
+
+  **High-security environment** (few authorized users):
+  - Decrease attempts: `3 attempts within 30 seconds`
+  - Longer block: `600 seconds` (10 minutes)
+</Accordion>
+
+<Accordion title="Include legal language in banners">
+  **Recommended phrasing**:
+  - "Unauthorized access is prohibited"
+  - "All activity is monitored and logged"
+  - "Violators will be prosecuted"
+
+  **Avoid**:
+  - "Welcome to XYZ Corp" (implies consent)
+  - Friendly/welcoming language (weakens legal standing)
+</Accordion>
+
+---
+
+## Compliance and Legal Notes
+
+<Warning>
+  **PCI-DSS Requirement 8.1.6**: Display a banner warning unauthorized users before login
+</Warning>
+
+<Info>
+  **NIST 800-53 AC-8**: "System Use Notification" — systems must display a notice before login
+</Info>
+
+<Tip>
+  **Consult your legal team** for exact wording. Banner language varies by country and industry.
+</Tip>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="GRE over IPsec" icon="lock" href="/guides/gre-ipsec">
+    Secure site-to-site tunnels between branches
+  </Card>
+  <Card title="Deployment" icon="play" href="/operations/execution">
+    Apply configuration to selected switches
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+<Tip>
+  The security configuration UI is implemented in:
+  - `ui/tab_security_gre.py:36-139` (Tab ⑧ UI)
+  - `ui/tab_security_gre.py:329-386` (`build_security_commands()` function)
+</Tip>

@@ -1,0 +1,316 @@
+---
+title: "command_builder.py"
+description: "IOS command generation module"
+---
+
+## Overview
+
+The `command_builder.py` module converts GUI-defined configuration (VLANs, DHCP, routes, QoS) into lists of IOS commands ready to be sent to the switch.
+
+This module has no tkinter dependencies; it's pure business logic, which facilitates testing command generation without opening the GUI.
+
+## expand_ports()
+
+Normalizes interface names to the full form expected by IOS 15.x.
+
+```python
+def expand_ports(ports_str: str) -> str
+```
+
+<ParamField path="ports_str" type="str" required>
+  Port specification in short or long notation
+</ParamField>
+
+<ResponseField name="return" type="str">
+  Normalized interface names with full prefixes
+</ResponseField>
+
+### Supported Notations
+
+Accepts short or long notation:
+- `"Gi0/1-3"` → `"GigabitEthernet0/1-3"`
+- `"Gi0/1,Gi0/3"` → `"GigabitEthernet0/1, GigabitEthernet0/3"`
+- `"Fa0/2"` → `"FastEthernet0/2"`
+
+### Why Normalize?
+
+IOS accepts `interface range` with full names; the short form 'Gi' sometimes generates errors depending on firmware version, so we normalize here.
+
+### Example
+
+```python
+from core.command_builder import expand_ports
+
+# Single range
+result = expand_ports("Gi0/1-3")
+print(result)  # "GigabitEthernet0/1-3"
+
+# Multiple interfaces
+result = expand_ports("Gi0/1,Gi0/3,Fa0/2")
+print(result)  # "GigabitEthernet0/1, GigabitEthernet0/3, FastEthernet0/2"
+```
+
+## build_commands()
+
+Generates the complete list of IOS commands in global configuration mode.
+
+```python
+def build_commands(
+    is_l3: bool,
+    chk_intervlan: bool,
+    dhcp_pools: list,
+    vlans_data: list,
+    static_routes: list,
+    chk_ospf: bool,
+    ospf_pid: str,
+    ospf_networks: list,
+    qos_classes: list,
+    pol_entries: list,
+    pol_name: str,
+    service_policies: list,
+    enable_pw: str = "",
+    login_attempts: str = "",
+    login_window: str = "",
+    login_block_for: str = "",
+    banner_text: str = "",
+    gre_tunnels: list = None,
+    log_fn = None,
+) -> list
+```
+
+### Core Parameters
+
+<ParamField path="is_l3" type="bool" required>
+  True if the switch has ip routing active (auto-detected)
+</ParamField>
+
+<ParamField path="chk_intervlan" type="bool" required>
+  Whether user enabled "Activate ip routing" in the routing tab
+</ParamField>
+
+<ParamField path="dhcp_pools" type="list" required>
+  List of dicts with keys: `name`, `net`, `mask`, `gw`
+</ParamField>
+
+<ParamField path="vlans_data" type="list" required>
+  List of dicts with VLAN configurations
+</ParamField>
+
+<ParamField path="static_routes" type="list" required>
+  List of dicts with keys: `dest`, `mask`, `nexthop`
+</ParamField>
+
+### OSPF Parameters
+
+<ParamField path="chk_ospf" type="bool" required>
+  Whether OSPF is enabled in the UI
+</ParamField>
+
+<ParamField path="ospf_pid" type="str" required>
+  OSPF process ID (e.g., "1")
+</ParamField>
+
+<ParamField path="ospf_networks" type="list" required>
+  List of dicts with keys: `network`, `wildcard`, `area`
+</ParamField>
+
+### QoS Parameters
+
+<ParamField path="qos_classes" type="list" required>
+  List of class-map dicts
+</ParamField>
+
+<ParamField path="pol_entries" type="list" required>
+  List of dicts with keys: `class`, `action`, `value`
+</ParamField>
+
+<ParamField path="pol_name" type="str" required>
+  Policy-map name
+</ParamField>
+
+<ParamField path="service_policies" type="list" required>
+  List of dicts with keys: `iface`, `dir`, `policy`
+</ParamField>
+
+### Security Parameters (v2.2)
+
+<ParamField path="enable_pw" type="str" default="">
+  Password for `enable secret` (MD5 type-5). Empty = omit
+</ParamField>
+
+<ParamField path="login_attempts" type="str" default="">
+  Max failed login attempts before blocking
+</ParamField>
+
+<ParamField path="login_window" type="str" default="">
+  Time window (seconds) to count attempts
+</ParamField>
+
+<ParamField path="login_block_for" type="str" default="">
+  Seconds to block after exceeding attempts
+</ParamField>
+
+<ParamField path="banner_text" type="str" default="">
+  MOTD banner text. Empty = omit
+</ParamField>
+
+### GRE/IPsec Parameters (v2.2)
+
+<ParamField path="gre_tunnels" type="list" default="None">
+  List of dicts with GRE over IPsec tunnel configurations
+</ParamField>
+
+### Logging
+
+<ParamField path="log_fn" type="callable" default="None">
+  Optional logging function (e.g., `self.log`). If None, no logging occurs
+</ParamField>
+
+### Return Value
+
+<ResponseField name="return" type="list">
+  IOS commands in correct order to send to the switch
+</ResponseField>
+
+### Command Generation Order
+
+1. **ip routing** (L3 switches only)
+2. **DHCP pools** (L3 switches only)
+3. **VLANs** (all switches)
+4. **Port assignments** to VLANs
+5. **Security ACLs**
+6. **SVIs** (Switch Virtual Interfaces - L3 only)
+7. **Static routes**
+8. **OSPF** configuration
+9. **QoS class-maps**
+10. **QoS policy-map**
+11. **Service-policy** applications
+12. **Security**: enable secret + login block-for + banner MOTD
+13. **GRE over IPsec** tunnels
+
+### Example
+
+```python
+from core.command_builder import build_commands
+
+dhcp_pools = [
+    {'name': 'VLAN10_POOL', 'net': '10.0.10.0', 'mask': '255.255.255.0', 'gw': '10.0.10.1'}
+]
+
+vlans_data = [
+    {
+        'id': '10',
+        'name': 'DATA',
+        'ports': 'Gi0/1-3',
+        'assign_ports': True,
+        'port_mode': 'access',
+        'dhcp_idx': 0,
+        'block_social': False,
+        'custom_acl': ''
+    }
+]
+
+static_routes = [
+    {'dest': '0.0.0.0', 'mask': '0.0.0.0', 'nexthop': '192.168.1.1'}
+]
+
+commands = build_commands(
+    is_l3=True,
+    chk_intervlan=True,
+    dhcp_pools=dhcp_pools,
+    vlans_data=vlans_data,
+    static_routes=static_routes,
+    chk_ospf=False,
+    ospf_pid="1",
+    ospf_networks=[],
+    qos_classes=[],
+    pol_entries=[],
+    pol_name="",
+    service_policies=[],
+    log_fn=print
+)
+
+for cmd in commands:
+    print(cmd)
+```
+
+## build_cleanup_commands()
+
+Reads the switch's running-config and generates `no ...` commands to clean up only what this application may have previously configured.
+
+```python
+def build_cleanup_commands(
+    nc,
+    static_routes: list,
+    ospf_networks: list,
+    log_fn = None
+) -> list
+```
+
+<ParamField path="nc" type="ConnectHandler" required>
+  Active Netmiko connection (already in enable mode)
+</ParamField>
+
+<ParamField path="static_routes" type="list" required>
+  Routes that the app configured (to know which to delete)
+</ParamField>
+
+<ParamField path="ospf_networks" type="list" required>
+  OSPF networks that the app configured (same)
+</ParamField>
+
+<ParamField path="log_fn" type="callable" default="None">
+  Optional logging function
+</ParamField>
+
+<ResponseField name="return" type="list">
+  Cleanup commands ready to send to the switch
+</ResponseField>
+
+### Protected Resources
+
+The cleanup function protects:
+- **SSH, users, VTY, crypto keys** (remote access)
+- **Uplink interface** (`UPLINK_IFACE`)
+- **Static routes and OSPF networks** NOT configured by this app
+- **VLAN 1** (native, never deleted)
+
+### Cleanup Targets
+
+- DHCP pools and exclusions
+- Named security ACLs (prefix `SEGURIDAD_VLAN_`)
+- Service-policies on interfaces
+- Policy-maps and class-maps
+- SVIs (VLAN interfaces, except VLAN 1)
+- Port configurations (access/trunk mode)
+- VLANs (except VLAN 1)
+- App-configured static routes
+- App-configured OSPF network statements
+
+### Example
+
+```python
+from netmiko import ConnectHandler
+from core.connector import make_device_params
+from core.command_builder import build_cleanup_commands
+
+sw = {
+    'ip': '192.168.1.100',
+    'user': 'admin',
+    'pass': 'cisco123',
+    'secret': 'enable123'
+}
+
+nc = ConnectHandler(**make_device_params(sw))
+nc.enable()
+
+static_routes = [{'dest': '10.0.20.0', 'mask': '255.255.255.0', 'nexthop': '192.168.1.2'}]
+ospf_networks = [{'network': '10.0.10.0', 'wildcard': '0.0.0.255', 'area': '0'}]
+
+cleanup_cmds = build_cleanup_commands(nc, static_routes, ospf_networks, print)
+
+for cmd in cleanup_cmds:
+    print(cmd)
+
+nc.disconnect()
+```

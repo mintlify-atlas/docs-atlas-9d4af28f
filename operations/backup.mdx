@@ -1,0 +1,329 @@
+---
+title: "Backup"
+description: "Tab ⑦ Backup - Exportar/importar JSON y descargar running-config"
+---
+
+La pestaña **⑦ Backup** proporciona tres tipos de respaldo:
+
+1. **Exportar/Importar JSON**: Guarda la configuración de la app (DHCP, VLANs, rutas, QoS)
+2. **Running-Config local**: Descarga `show running-config` como archivo `.txt`
+3. **AWS S3 Backup**: Sube running-config al cloud con cifrado automático
+
+## 1. Exportar/Importar JSON
+
+### Exportar configuración
+
+Guarda toda la configuración de la app en un archivo JSON.
+
+<Steps>
+  <Step title="Haz clic en '💾 Exportar .json'">
+    Se abrirá un diálogo para guardar el archivo.
+  </Step>
+  
+  <Step title="Selecciona ubicación y nombre">
+    Por defecto: `config_YYYYMMDD_HHMMSS.json`
+  </Step>
+  
+  <Step title="Verifica en la vista previa">
+    El contenido del JSON aparecerá en el área de vista previa.
+  </Step>
+</Steps>
+
+### Estructura del JSON exportado
+
+```json
+{
+  "meta": {
+    "version": "2.1",
+    "exported": "2025-04-10 14:30:00"
+  },
+  "sucursales": [
+    {"name": "SW-CDMX", "ip": "192.168.1.10", "user": "admin"}
+  ],
+  "dhcp_pools": [
+    {"name": "POOL-VLAN10", "net": "192.168.10.0", "mask": "255.255.255.0", "gw": "192.168.10.1"}
+  ],
+  "vlans": [
+    {"id": "10", "name": "DATA", "dhcp_idx": 0, "ports": "Gi0/1-10"}
+  ],
+  "static_routes": [
+    {"dest": "0.0.0.0", "mask": "0.0.0.0", "nexthop": "192.168.1.1"}
+  ],
+  "ospf_networks": [],
+  "qos_classes": [],
+  "pol_entries": [],
+  "service_policies": []
+}
+```
+
+<Warning>
+  **Las contraseñas NO se incluyen** en el JSON por seguridad.
+  
+  Campos omitidos: `pass`, `secret`, `enable_pw`, credenciales AWS S3.
+</Warning>
+
+Código en `ui/tab_exec_backup.py:309-346`:
+
+```python
+def export_config(app):
+    payload = {
+        "meta": {
+            "version": "2.1",
+            "exported": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        # Sucursales sin contraseñas (solo nombre, IP y usuario)
+        "sucursales": [{k: v for k, v in s.items() if k not in ('pass', 'secret')}
+                       for s in app.sucursales],
+        "dhcp_pools":      app.dhcp_pools,
+        "vlans":           app.vlans_data,
+        "static_routes":   app.static_routes,
+        # ...
+    }
+    with open(fn, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+```
+
+### Importar configuración
+
+Carga una configuración desde JSON y recarga todos los listboxes de la GUI.
+
+<Steps>
+  <Step title="Haz clic en '📂 Importar .json'">
+    Selecciona el archivo JSON a cargar.
+  </Step>
+  
+  <Step title="Confirma la carga">
+    Se muestra un resumen:
+    
+    "Cargar 3 pool(s), 5 VLAN(s) y 2 clase(s) QoS? Reemplaza la config actual."
+  </Step>
+  
+  <Step title="Los listboxes se actualizan automáticamente">
+    Todos los datos se refrescan en la interfaz.
+  </Step>
+</Steps>
+
+<Note>
+  La importación **no modifica ningún switch**; solo actualiza el estado en memoria de la app.
+</Note>
+
+## 2. Descargar running-config (local)
+
+Descarga el `show running-config` de un switch y lo guarda como archivo `.txt`.
+
+### Uso
+
+<Steps>
+  <Step title="Selecciona una sucursal">
+    En la pestaña **① Sucursales**, haz clic en la sucursal de la cual quieres descargar el running-config.
+  </Step>
+  
+  <Step title="Haz clic en '⬇ Descargar running-config'">
+    Se abrirá un diálogo para guardar el archivo.
+  </Step>
+  
+  <Step title="Guarda el archivo">
+    Por defecto: `running_SW-NOMBRE_YYYYMMDD_HHMMSS.txt`
+  </Step>
+</Steps>
+
+### Estructura del archivo
+
+El archivo incluye un encabezado con metadatos seguido del running-config completo:
+
+```
+# Backup 2025-04-10 14:30:00
+# Sucursal: SW-CDMX  IP: 192.168.1.10
+
+Building configuration...
+
+Current configuration : 4532 bytes
+!
+version 15.2
+...
+```
+
+Implementación en `ui/tab_exec_backup.py:461-494`:
+
+```python
+def backup_running_config(app):
+    sw = targets[0]   # solo se descarga de una sucursal a la vez
+    
+    try:
+        raw = fetch_running_config(sw)
+        header = (
+            f"# Backup {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"# Sucursal: {sw['name']}  IP: {sw['ip']}\n\n"
+        )
+        with open(fn, 'w') as f:
+            f.write(header + raw)
+        
+        # Mostrar los primeros 4000 caracteres en la vista previa
+        preview = raw[:4000] + ("\n...(truncado)..." if len(raw) > 4000 else "")
+        _show_in_preview(app, preview)
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+```
+
+### Función fetch_running_config
+
+Código en `core/connector.py:218-238`:
+
+```python
+def fetch_running_config(sw: dict) -> str:
+    """
+    Descarga el running-config actual del switch.
+    
+    Retorna
+    -------
+    str : Contenido completo del running-config.
+    """
+    nc  = ConnectHandler(**make_device_params(sw))
+    nc.enable()
+    raw = nc.send_command("show running-config", delay_factor=4)
+    nc.disconnect()
+    return raw
+```
+
+<Info>
+  Se usa `delay_factor=4` porque `show running-config` puede ser lento en switches con muchas líneas de configuración.
+</Info>
+
+## 3. AWS S3 Backup
+
+Sube el running-config de switches seleccionados a un bucket S3 en AWS. Ver [AWS S3](/operations/aws-s3) para detalles completos.
+
+### Características principales
+
+- **Cifrado automático**: SSE-AES256 en reposo
+- **Estructura de rutas**: `<prefijo>/<hostname>/<YYYY-MM-DD_HH-MM-SS>.txt`
+- **Credenciales seguras**: No se guardan en disco ni en JSON
+- **Verificación previa**: Botón para validar credenciales sin costo
+
+### Configuración rápida
+
+<CodeGroup>
+
+```bash Terminal
+pip install boto3 --break-system-packages
+```
+
+```python Campos requeridos
+Access Key ID     : AKIAIOSFODNN7EXAMPLE
+Secret Access Key : wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+Región AWS        : us-east-1
+Bucket S3         : mi-bucket-backups
+Prefijo/carpeta   : backups/switches/
+```
+
+</CodeGroup>
+
+### Ejemplo de ruta en S3
+
+```
+s3://mi-bucket-backups/backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+```
+
+<Tip>
+  Las credenciales AWS **no se guardan en disco** ni se exportan en el JSON.
+  
+  Debes ingresarlas manualmente cada vez que inicias la app.
+</Tip>
+
+## Vista previa
+
+El área de vista previa muestra:
+
+- **JSON exportado**: Estructura completa de la configuración
+- **Running-config**: Primeros 4000 caracteres (truncado si es más largo)
+- **Resultados S3**: Lista de backups exitosos/fallidos
+
+Código en `ui/tab_exec_backup.py:496-500`:
+
+```python
+def _show_in_preview(app, text: str):
+    """Muestra texto en el área de vista previa de la pestaña de backup."""
+    app.backup_preview.delete("1.0", tk.END)
+    app.backup_preview.insert(tk.END, text)
+```
+
+## Recarga de listboxes
+
+Cuando importas un JSON, todos los listboxes se recargan automáticamente:
+
+<CodeGroup>
+
+```python DHCP
+app.dhcp_listbox.delete(0, tk.END)
+for p in app.dhcp_pools:
+    app.dhcp_listbox.insert(
+        tk.END, f"  {p['name']:18} {p['net']:18} {p['mask']:18} GW:{p['gw']}")
+```
+
+```python VLANs
+app.vlan_listbox.delete(0, tk.END)
+for v in app.vlans_data:
+    ps = "sin DHCP"
+    if v.get('dhcp_idx') is not None:
+        pp = app.dhcp_pools[v['dhcp_idx']]
+        ps = f"Pool:{pp['name']}"
+    app.vlan_listbox.insert(
+        tk.END,
+        f"  VLAN {v['id']:5} [{v.get('name', ''):14}]  {ps:22}  "
+        f"Puertos:{v.get('ports') or '—'}")
+```
+
+```python QoS
+app.cls_listbox.delete(0, tk.END)
+for c in app.qos_classes:
+    app.cls_listbox.insert(
+        tk.END,
+        f"  class-map {c['match_type']} {c['name']:20}  match {c['criteria']} {c['value']}")
+```
+
+</CodeGroup>
+
+Ver código completo en `ui/tab_exec_backup.py:406-459`
+
+## Casos de uso
+
+### Respaldar antes de cambios mayores
+
+```
+1. Exportar JSON actual → config_backup_20250410.json
+2. Descargar running-config de cada switch → running_SW-CDMX_*.txt
+3. Hacer cambios en la app
+4. Aplicar a switches
+5. Si hay problemas → Importar JSON de respaldo y re-aplicar
+```
+
+### Replicar configuración a múltiples sitios
+
+```
+1. Configurar DHCP, VLANs, QoS en un switch piloto
+2. Exportar JSON → config_estandar.json
+3. En cada sitio nuevo:
+   a. Importar config_estandar.json
+   b. Agregar sucursales locales (pestaña ①)
+   c. Aplicar a sucursales seleccionadas
+```
+
+### Auditoría y cumplimiento
+
+```
+1. Descargar running-config de todos los switches (local o S3)
+2. Comparar con baseline de seguridad
+3. Identificar desviaciones
+4. Corregir y re-aplicar configuración estándar
+```
+
+## Referencia de código
+
+| Archivo | Líneas | Descripción |
+|---------|--------|-------------|
+| `ui/tab_exec_backup.py:209-307` | 98 líneas | Construcción de la pestaña Backup |
+| `ui/tab_exec_backup.py:309-346` | 37 líneas | Función `export_config()` |
+| `ui/tab_exec_backup.py:348-404` | 56 líneas | Función `import_config()` |
+| `ui/tab_exec_backup.py:461-494` | 33 líneas | Función `backup_running_config()` |
+| `ui/tab_exec_backup.py:406-459` | 53 líneas | Función `_reload_listboxes()` |
+| `core/connector.py:218-238` | 20 líneas | Función `fetch_running_config()` |

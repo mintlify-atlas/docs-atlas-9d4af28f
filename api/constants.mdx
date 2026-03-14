@@ -1,0 +1,194 @@
+---
+title: "constants.py"
+description: "Global application constants"
+---
+
+## Overview
+
+The `constants.py` module centralizes colors, version, protected interfaces, and QoS presets. Modify this file to change the visual theme or default values.
+
+## Version and Metadata
+
+### APP_VERSION
+
+Application version string displayed in the window title.
+
+```python
+APP_VERSION = "v2.2  |  IOSvL2 15.2 / GRE-IPsec / S3 Backup"
+```
+
+<ResponseField name="APP_VERSION" type="str">
+  Current version: `"v2.2  |  IOSvL2 15.2 / GRE-IPsec / S3 Backup"`
+</ResponseField>
+
+### UPLINK_IFACE
+
+Uplink/management interface that should NEVER be modified by the app.
+
+```python
+UPLINK_IFACE = "GigabitEthernet0/0"
+```
+
+<ResponseField name="UPLINK_IFACE" type="str">
+  Protected interface: `"GigabitEthernet0/0"`
+</ResponseField>
+
+This interface connects the switch to the router/core; modifying it can leave the switch without access.
+
+## QoS DSCP Presets
+
+### DSCP_PRESETS
+
+Tuples of (visual_label, IOS_value) for QoS quick buttons.
+
+```python
+DSCP_PRESETS = [
+    ("EF  — Voz/Video (46)",          "ef"),
+    ("AF41 — Video conferencia (34)", "af41"),
+    ("AF31 — Llamadas (26)",          "af31"),
+    ("AF21 — Datos críticos (18)",    "af21"),
+    ("AF11 — Datos normales (10)",    "af11"),
+    ("CS3  — Señalización (24)",      "cs3"),
+    ("CS1  — Scavenger (8)",          "cs1"),
+    ("Default — Best effort (0)",     "default"),
+]
+```
+
+<ResponseField name="DSCP_PRESETS" type="list[tuple]">
+  List of (label, value) tuples for DSCP marking
+</ResponseField>
+
+### DSCP Values Explained
+
+**DSCP** (Differentiated Services Code Point) defines traffic priority:
+
+- **EF** (Expedited Forwarding) → low-latency voice/video
+- **AFxx** (Assured Forwarding) → guaranteed traffic by class
+- **CSx** (Class Selector) → legacy IP Precedence compatibility
+- **Default** → best-effort traffic (no priority)
+
+### Example Usage
+
+```python
+from constants import DSCP_PRESETS
+
+# Display presets in a UI dropdown
+for label, value in DSCP_PRESETS:
+    print(f"{label}: {value}")
+
+# Output:
+# EF  — Voz/Video (46): ef
+# AF41 — Video conferencia (34): af41
+# ...
+```
+
+## Color Palette
+
+Dark theme inspired by GitHub Dark.
+
+### Background Colors
+
+<ResponseField name="BG" type="str">
+  Main background: `"#0d1117"`
+</ResponseField>
+
+<ResponseField name="BG2" type="str">
+  Panel background: `"#161b22"`
+</ResponseField>
+
+<ResponseField name="BG3" type="str">
+  Input background: `"#21262d"`
+</ResponseField>
+
+### Accent Colors
+
+<ResponseField name="ACCENT" type="str">
+  Blue for emphasis: `"#58a6ff"`
+</ResponseField>
+
+<ResponseField name="ACCENT2" type="str">
+  Orange/red for action buttons: `"#f78166"`
+</ResponseField>
+
+### Status Colors
+
+<ResponseField name="SUCCESS" type="str">
+  Green for success: `"#3fb950"`
+</ResponseField>
+
+<ResponseField name="WARN" type="str">
+  Yellow for warnings: `"#d29922"`
+</ResponseField>
+
+### Text Colors
+
+<ResponseField name="TEXT" type="str">
+  Primary text: `"#c9d1d9"`
+</ResponseField>
+
+<ResponseField name="TEXT2" type="str">
+  Secondary/gray text: `"#8b949e"`
+</ResponseField>
+
+### Border Color
+
+<ResponseField name="BORDER" type="str">
+  Widget borders: `"#30363d"`
+</ResponseField>
+
+### Example Usage
+
+```python
+import tkinter as tk
+from constants import BG, BG2, ACCENT, TEXT
+
+root = tk.Tk()
+root.configure(bg=BG)
+
+frame = tk.Frame(root, bg=BG2)
+frame.pack(padx=10, pady=10)
+
+label = tk.Label(
+    frame,
+    text="Welcome to Switch Configurator",
+    bg=BG2,
+    fg=ACCENT,
+    font=("Consolas", 14)
+)
+label.pack()
+
+button = tk.Button(
+    frame,
+    text="Configure",
+    bg=ACCENT,
+    fg=BG,
+    activebackground=TEXT
+)
+button.pack(pady=5)
+
+root.mainloop()
+```
+
+## Complete Color Reference
+
+```python
+# Background colors
+BG      = "#0d1117"  # Main background
+BG2     = "#161b22"  # Panel background
+BG3     = "#21262d"  # Input background
+
+# Accent colors
+ACCENT  = "#58a6ff"  # Blue emphasis
+ACCENT2 = "#f78166"  # Orange/red action
+
+# Status colors
+SUCCESS = "#3fb950"  # Green success
+WARN    = "#d29922"  # Yellow warning
+
+# Text colors
+TEXT    = "#c9d1d9"  # Primary text
+TEXT2   = "#8b949e"  # Secondary text
+
+# Border color
+BORDER  = "#30363d"  # Widget borders
+```

@@ -1,0 +1,724 @@
+---
+title: Troubleshooting
+description: Common issues and solutions when deploying configurations
+---
+
+## Overview
+
+This page covers common issues you may encounter when using SECURE-BRANCH-lac and their solutions.
+
+---
+
+## Connection Issues
+
+### SSH Timeout
+
+**Symptom:** Connection fails with `NetmikoTimeoutException`
+
+```python
+except NetmikoTimeoutException:
+    if log_fn:
+        log_fn(f"  ✘ {sw['name']} — Timeout")
+```
+
+**Source:** `core/connector.py:206-208`
+
+<Accordion title="Possible Causes and Solutions">
+  **Network connectivity issues:**
+  - Verify the switch IP is reachable: `ping <switch_ip>`
+  - Check firewall rules allow SSH (port 22)
+  - Ensure the switch is powered on and connected
+
+  **SSH not enabled on switch:**
+  ```bash
+  # On the switch, verify SSH is running:
+  show ip ssh
+  
+  # If not configured, enable it:
+  conf t
+  hostname <name>
+  ip domain-name <domain>
+  crypto key generate rsa modulus 2048
+  ip ssh version 2
+  line vty 0 4
+   transport input ssh
+  ```
+
+  **Timeout too aggressive:**
+  The default timeout is 60 seconds. For slow networks, adjust in `connector.py:46`:
+  ```python
+  'read_timeout_override': 60,  # Increase to 90 or 120 for slow links
+  ```
+</Accordion>
+
+---
+
+### Authentication Failed
+
+**Symptom:** Connection fails with `NetmikoAuthenticationException`
+
+```python
+except NetmikoAuthenticationException:
+    if log_fn:
+        log_fn(f"  ✘ {sw['name']} — Error de Autenticación")
+```
+
+**Source:** `core/connector.py:203-205`
+
+<Accordion title="Possible Causes and Solutions">
+  **Incorrect credentials:**
+  - Verify username and password in the **Sucursales** tab
+  - Check that `enable secret` matches the switch configuration
+  - Ensure there are no extra spaces in credential fields
+
+  **AAA authentication blocking:**
+  If the switch uses AAA (RADIUS/TACACS+), local authentication might be disabled:
+  ```bash
+  # Check AAA config:
+  show run | include aaa
+  
+  # If AAA is enabled, ensure fallback to local:
+  aaa authentication login default group tacacs+ local
+  aaa authentication enable default group tacacs+ enable
+  ```
+
+  **Account locked due to login block-for:**
+  If you previously configured login blocking and triggered it:
+  ```bash
+  # Wait for the block period to expire, or
+  # Connect via console and remove the block:
+  conf t
+  no login block-for 120 attempts 5 within 60
+  ```
+</Accordion>
+
+---
+
+### Connection Drops Mid-Deployment
+
+**Symptom:** Deployment starts successfully but disconnects partway through
+
+```python
+except Exception:
+    if log_fn:
+        log_fn("  [FATAL] Socket cerrado, abortando este switch.")
+    raise   # propagate so _run_on_switch captures it
+```
+
+**Source:** `core/connector.py:124-126`
+
+<Accordion title="Possible Causes and Solutions">
+  **Switch CPU overload:**
+  Slow commands (OSPF, routing) can cause the switch to delay responses beyond the timeout.
+  
+  The app already uses adaptive delays:
+  ```python
+  is_slow = any(k in cmd.lower() for k in
+                ("ospf", "network", "router", "ip route", "no router"))
+  delay        = 6   if is_slow else 2
+  read_timeout = 120 if is_slow else 60
+  ```
+  **Source:** `core/connector.py:93-96`
+
+  If still timing out, increase delays further in `connector.py:95-96`.
+
+  **Uplink interface accidentally modified:**
+  If the uplink gets configured, management access is lost. This should never happen due to protections, but verify:
+  ```python
+  UPLINK_IFACE = "GigabitEthernet0/0"  # Confirm this matches your topology
+  ```
+  **Source:** `constants.py:13`
+
+  **VTY line timeout:**
+  The switch might have an aggressive VTY timeout:
+  ```bash
+  # On the switch:
+  show run | include exec-timeout
+  
+  # Increase it:
+  line vty 0 4
+   exec-timeout 30 0
+  ```
+</Accordion>
+
+---
+
+## Command Execution Errors
+
+### Invalid Input Detected at '^' Marker
+
+**Symptom:** IOS rejects a command with syntax error
+
+```python
+out = nc.send_command_timing(
+    cmd,
+    delay_factor=delay,
+    read_timeout=read_timeout,
+    strip_prompt=False,
+    strip_command=False,
+)
+# Show response only if there's something relevant (warnings, IOS errors, etc.)
+if out.strip() and log_fn:
+    log_fn(f"    -> {out.strip()[:200]}")
+```
+
+**Source:** `core/connector.py:99-108`
+
+<Accordion title="Possible Causes and Solutions">
+  **Port name mismatch:**
+  The `expand_ports()` function normalizes interface names, but if your switch uses different naming (e.g., `FastEthernet` instead of `GigabitEthernet`):
+  
+  ```python
+  # Check the regex in command_builder.py:34-50
+  m = re.match(
+      r'^(gi(?:gabitethernet)?|fa(?:stethernet)?)(\ d+)/(\d+)(?:-(\d+))?$',
+      p, re.IGNORECASE)
+  ```
+  
+  Adjust the pattern if your switch uses non-standard names.
+
+  **IOS version incompatibility:**
+  The app targets `vios_l2-ADVENTERPRISEK9-M` IOS 15.2. Older versions might reject certain commands:
+  - `switchport trunk encapsulation dot1q` — not needed on some switches
+  - `spanning-tree portfast` — might be `spanning-tree portfast edge` on newer IOS
+  
+  Check your IOS version:
+  ```bash
+  show version | include IOS
+  ```
+
+  **Command order issue:**
+  Some IOS commands require prerequisites. The app sends commands in order (see [Command Generation](/advanced/command-generation#command-generation-order)), but custom ACLs might have issues:
+  
+  ```python
+  if v['custom_acl']:
+      # User-provided custom rules (one per line)
+      cmds += [r.strip() for r in v['custom_acl'].split('\n') if r.strip()]
+  ```
+  **Source:** `core/command_builder.py:183-185`
+  
+  Ensure custom ACL entries are valid extended ACL syntax:
+  ```bash
+  # Good:
+  permit tcp 10.0.0.0 0.0.0.255 any eq 443
+  deny ip any host 1.2.3.4
+  
+  # Bad (missing protocol):
+  permit 10.0.0.0 0.0.0.255 any
+  ```
+</Accordion>
+
+---
+
+### OSPF Commands Timing Out
+
+**Symptom:** OSPF `network` statements take forever or fail
+
+<Accordion title="Possible Causes and Solutions">
+  **SPF calculation delay:**
+  When adding OSPF networks, the switch recalculates the SPF tree, which can take time.
+  
+  The app already uses extended delays:
+  ```python
+  is_slow = any(k in cmd.lower() for k in
+                ("ospf", "network", "router", "ip route", "no router"))
+  delay        = 6   if is_slow else 2
+  read_timeout = 120 if is_slow else 60
+  ```
+  **Source:** `core/connector.py:93-96`
+
+  If still timing out:
+  - Reduce the number of OSPF networks per deployment
+  - Increase `read_timeout` to 180 seconds
+
+  **OSPF adjacency issues:**
+  If OSPF is stuck trying to form adjacencies, check:
+  ```bash
+  show ip ospf neighbor
+  show ip ospf interface
+  ```
+  
+  Ensure area numbers match between switches and the router.
+</Accordion>
+
+---
+
+### QoS Policy Not Applied
+
+**Symptom:** `service-policy` command accepted but policy doesn't work
+
+<Accordion title="Possible Causes and Solutions">
+  **Policy applied to wrong interface:**
+  Verify the interface name in the **QoS** tab matches the physical port.
+  
+  **Platform limitations:**
+  IOSvL2 has limited QoS hardware support. Some actions may not work:
+  - `priority` — might not be supported on virtual platforms
+  - `shape average` — requires hardware queuing
+  
+  Check platform support:
+  ```bash
+  show policy-map interface <interface>
+  ```
+
+  **Direction mismatch:**
+  Some platforms only support `input` or `output` policies, not both:
+  ```python
+  for sp in service_policies:
+      cmds += [
+          f"interface {sp['iface']}",
+          f"service-policy {sp['dir']} {sp['policy']}",  # dir = input/output
+          "exit"
+      ]
+  ```
+  **Source:** `core/command_builder.py:254-259`
+  
+  Try applying the policy in the opposite direction.
+
+  **Class-map not matching traffic:**
+  Verify your match criteria:
+  ```bash
+  show class-map
+  show policy-map <policy-name>
+  ```
+  
+  Use packet capture to confirm DSCP markings:
+  ```bash
+  # On a test PC:
+  ping -Q 46 <destination>  # Send packets with DSCP EF (46)
+  ```
+</Accordion>
+
+---
+
+## Layer 2/Layer 3 Detection Issues
+
+### Switch Incorrectly Detected as Layer 2
+
+**Symptom:** Switch has `ip routing` but app skips DHCP and SVI IPs
+
+<Accordion title="Possible Causes and Solutions">
+  **No connected routes:**
+  The detection logic looks for directly connected routes:
+  
+  ```python
+  def detect_l3(nc) -> bool:
+      try:
+          out = nc.send_command("show ip route connected", delay_factor=2)
+          return bool(re.search(r'^C\s+', out, re.MULTILINE))
+      except Exception:
+          return False   # If it fails, assume L2 for safety
+  ```
+  **Source:** `core/connector.py:50-69`
+  
+  If `ip routing` is enabled but no SVIs have IPs yet:
+  ```bash
+  # Add a temporary SVI to make detection work:
+  interface vlan 1
+   ip address 192.168.1.254 255.255.255.0
+   no shutdown
+  ```
+  
+  Then re-run the app.
+
+  **Detection command failed:**
+  If `show ip route connected` fails (e.g., due to privilege level), the function returns `False` as a safety measure.
+  
+  Verify enable mode works:
+  ```bash
+  # On the switch:
+  enable
+  show privilege
+  # Should show: Current privilege level is 15
+  ```
+</Accordion>
+
+---
+
+### Switch Incorrectly Detected as Layer 3
+
+**Symptom:** Layer 2 switch receives `ip routing` command and errors
+
+<Accordion title="Possible Causes and Solutions">
+  **Manual IP routes configured:**
+  If the L2 switch has static routes (unusual but possible), the detection might see them as connected routes.
+  
+  Manually override detection by commenting out L3-only commands or adjust the regex:
+  ```python
+  # More strict: require 'ip routing' in running-config
+  def detect_l3(nc) -> bool:
+      try:
+          raw = nc.send_command("show running-config | include ip routing")
+          return bool(re.search(r'^ip routing', raw, re.MULTILINE))
+      except Exception:
+          return False
+  ```
+  
+  This would replace the route-based detection.
+</Accordion>
+
+---
+
+## Cleanup Issues
+
+### Configuration Not Fully Removed
+
+**Symptom:** Old VLANs or routes remain after cleanup
+
+<Accordion title="Possible Causes and Solutions">
+  **Manual configuration mixed with app configuration:**
+  The cleanup only removes items it knows about:
+  
+  ```python
+  for rt in static_routes:
+      rt_str = f"{rt['dest']} {rt['mask']} {rt['nexthop']}"
+      if f"ip route {rt_str}" in raw:   # verify it actually exists
+          cleanup.append(f"no ip route {rt_str}")
+  ```
+  **Source:** `core/command_builder.py:376-379`
+  
+  If you added routes manually (not via the app), they won't be in `static_routes` and won't be removed.
+  
+  **Solution:** Either:
+  - Remove them manually via CLI
+  - Add them to the GUI, deploy, then cleanup (so they're tracked)
+
+  **VLAN in use by other config:**
+  IOS won't delete a VLAN if it's still referenced:
+  ```bash
+  # Error: "VLAN 10 is in use and cannot be removed"
+  ```
+  
+  The app removes port assignments first, but if you have manual config:
+  ```bash
+  # Manually check:
+  show vlan id 10
+  show run interface vlan 10
+  ```
+</Accordion>
+
+---
+
+### Uplink Accidentally Modified
+
+**Symptom:** Lost management access after cleanup
+
+<Accordion title="Prevention and Recovery">
+  **Prevention:**
+  The uplink is protected:
+  ```python
+  if UPLINK_IFACE.lower() in iface.lower():
+      continue   # NEVER touch the uplink
+  ```
+  **Source:** `core/command_builder.py:358-359`
+  
+  Verify the constant matches your topology:
+  ```python
+  UPLINK_IFACE = "GigabitEthernet0/0"  # Change if your uplink is different
+  ```
+  **Source:** `constants.py:13`
+
+  **Recovery:**
+  Connect via console cable:
+  ```bash
+  enable
+  conf t
+  interface GigabitEthernet0/0
+   no shutdown
+   # Re-apply IP if it was removed:
+   ip address dhcp  # or static IP
+  ```
+  
+  Or reset to factory defaults and reconfigure from backup.
+</Accordion>
+
+---
+
+## Backup and AWS S3 Issues
+
+### S3 Credentials Verification Failed
+
+**Symptom:** `head_bucket` fails when testing AWS credentials
+
+<Accordion title="Possible Causes and Solutions">
+  **Invalid credentials:**
+  - Verify Access Key ID and Secret Access Key
+  - Check IAM user has `s3:ListBucket` permission
+  
+  **Bucket doesn't exist:**
+  Create it first:
+  ```bash
+  aws s3 mb s3://<bucket-name> --region <region>
+  ```
+
+  **Region mismatch:**
+  Ensure the region in the GUI matches the bucket's region:
+  ```bash
+  aws s3api get-bucket-location --bucket <bucket-name>
+  ```
+
+  **Network/firewall blocking AWS:**
+  Test connectivity:
+  ```bash
+  ping s3.amazonaws.com
+  curl https://s3.amazonaws.com
+  ```
+</Accordion>
+
+---
+
+### Backup Upload Fails with Access Denied
+
+**Symptom:** S3 upload returns `403 Forbidden`
+
+<Accordion title="Possible Causes and Solutions">
+  **Missing IAM permissions:**
+  The IAM user needs:
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:PutObject",
+          "s3:PutObjectAcl"
+        ],
+        "Resource": "arn:aws:s3:::<bucket-name>/*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::<bucket-name>"
+      }
+    ]
+  }
+  ```
+
+  **Bucket policy blocking upload:**
+  Check bucket policy:
+  ```bash
+  aws s3api get-bucket-policy --bucket <bucket-name>
+  ```
+  
+  Ensure it doesn't deny PutObject from your IP/user.
+
+  **Encryption key access:**
+  If the bucket uses KMS encryption, ensure the IAM user has `kms:Decrypt` and `kms:GenerateDataKey` permissions for the KMS key.
+</Accordion>
+
+---
+
+## GRE over IPsec Issues
+
+### Tunnel Stays Down
+
+**Symptom:** `show interface tunnel X` shows `line protocol is down`
+
+<Accordion title="Possible Causes and Solutions">
+  **Source IP unreachable:**
+  Verify the tunnel source IP is reachable:
+  ```bash
+  ping <tunnel-source-ip>
+  show ip route <tunnel-source-ip>
+  ```
+  
+  The app configures tunnels **after** routes to avoid this:
+  ```python
+  # Tunnels are configured after routes so the system can correctly
+  # resolve the tunnel source interface.
+  if gre_tunnels:
+      gre_cmds = build_gre_ipsec_commands(gre_tunnels)
+  ```
+  **Source:** `core/command_builder.py:278-282`
+
+  **Destination IP unreachable:**
+  Ensure the remote peer is online and reachable:
+  ```bash
+  ping <tunnel-destination-ip>
+  ```
+
+  **IPsec phase 1 or 2 failure:**
+  Check IPsec status:
+  ```bash
+  show crypto isakmp sa
+  show crypto ipsec sa
+  ```
+  
+  Common issues:
+  - Pre-shared key mismatch
+  - IKE policy mismatch (DH group, encryption)
+  - Transform set mismatch
+</Accordion>
+
+---
+
+### Tunnel Up But No Traffic
+
+**Symptom:** Tunnel shows `up/up` but ping across tunnel fails
+
+<Accordion title="Possible Causes and Solutions">
+  **Crypto ACL not matching:**
+  The crypto ACL defines which traffic gets encrypted. Verify:
+  ```bash
+  show crypto ipsec sa
+  show access-lists <crypto-acl-name>
+  ```
+  
+  Ensure the ACL permits the tunnel subnet:
+  ```bash
+  # Example:
+  ip access-list extended CRYPTO-ACL
+   permit gre host <local-ip> host <remote-ip>
+  ```
+
+  **Routing issue:**
+  Traffic might not be routed to the tunnel:
+  ```bash
+  # Add a route to the remote tunnel subnet:
+  ip route <remote-subnet> <remote-mask> Tunnel0
+  ```
+
+  **Tunnel subnet overlap:**
+  If tunnel IPs overlap with physical subnets, routing breaks:
+  ```bash
+  # On both peers, ensure tunnel IPs are unique:
+  interface Tunnel0
+   ip address 10.255.255.1 255.255.255.252  # Use a /30 for point-to-point
+  ```
+</Accordion>
+
+---
+
+## Performance Issues
+
+### Deployment Takes Too Long
+
+**Symptom:** Deployment to multiple switches is slow
+
+<Accordion title="Optimization Tips">
+  **Sequential vs parallel deployment:**
+  The app deploys switches sequentially. For faster deployment, consider:
+  - Deploying to fewer switches at once
+  - Using threading (requires code modification)
+  
+  **Reduce QoS policies:**
+  Each service-policy command adds overhead. Consolidate policies where possible.
+
+  **Minimize OSPF networks:**
+  Each `network` statement triggers SPF recalculation. Summarize networks:
+  ```bash
+  # Instead of:
+  network 10.1.1.0 0.0.0.255 area 0
+  network 10.1.2.0 0.0.0.255 area 0
+  
+  # Use:
+  network 10.1.0.0 0.0.255.255 area 0
+  ```
+
+  **Disable cleanup if not needed:**
+  If deploying to fresh switches, uncheck "Limpiar config anterior" to skip the cleanup phase.
+</Accordion>
+
+---
+
+### Switch CPU Spikes During Deployment
+
+**Symptom:** Switch becomes unresponsive during config push
+
+<Accordion title="Solutions">
+  **Increase delays:**
+  Give the switch more time to process each command:
+  ```python
+  # In connector.py:95-96, increase:
+  delay        = 8   if is_slow else 3  # was 6 and 2
+  read_timeout = 180 if is_slow else 90  # was 120 and 60
+  ```
+
+  **Split deployment into phases:**
+  Instead of deploying all features at once:
+  1. First deployment: VLANs + ports
+  2. Second deployment: Routing + OSPF
+  3. Third deployment: QoS + Security
+  
+  This gives the switch time to stabilize between phases.
+
+  **Upgrade IOS:**
+  Older IOS versions are slower. Upgrade to the latest stable release for your platform.
+</Accordion>
+
+---
+
+## Logging and Debugging
+
+### Enable Verbose Logging
+
+To see full command output, the app already logs responses:
+
+```python
+out = nc.send_command_timing(
+    cmd,
+    delay_factor=delay,
+    read_timeout=read_timeout,
+    strip_prompt=False,
+    strip_command=False,
+)
+# Show response only if there's something relevant (warnings, IOS errors, etc.)
+if out.strip() and log_fn:
+    log_fn(f"    -> {out.strip()[:200]}")
+```
+
+**Source:** `core/connector.py:99-108`
+
+To see the full output (not truncated to 200 chars), modify line 108:
+```python
+log_fn(f"    -> {out.strip()}")  # Remove [:200] to see everything
+```
+
+---
+
+### Capture Running-Config Before and After
+
+```python
+def fetch_running_config(sw: dict) -> str:
+    """
+    Downloads the current running-config from the switch.
+    """
+    nc  = ConnectHandler(**make_device_params(sw))
+    nc.enable()
+    raw = nc.send_command("show running-config", delay_factor=4)
+    nc.disconnect()
+    return raw
+```
+
+**Source:** `core/connector.py:218-238`
+
+Use the **Backup** tab to download configs before deploying, so you can compare and rollback if needed.
+
+---
+
+## Getting Help
+
+If you encounter an issue not covered here:
+
+1. **Check the log output** in the **Ejecución** tab for specific error messages
+2. **Verify source code** references in this document to understand the exact behavior
+3. **Test commands manually** via SSH to isolate app vs IOS issues
+4. **Consult Cisco IOS documentation** for your specific platform and version
+
+<Warning>
+Always test deployments in a lab environment before production.
+</Warning>
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Command Generation" icon="code" href="/advanced/command-generation">
+    Understand how commands are built
+  </Card>
+  <Card title="Protections" icon="shield" href="/advanced/protections">
+    Learn about automatic safeguards
+  </Card>
+</CardGroup>

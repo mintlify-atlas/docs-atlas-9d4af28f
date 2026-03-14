@@ -1,0 +1,130 @@
+---
+title: Introduction
+description: Automated multi-branch Cisco IOS configuration tool with enterprise-grade security and networking features
+---
+
+## What is SECURE-BRANCH-lac?
+
+SECURE-BRANCH-lac is a powerful GUI-based tool designed for network engineers to configure multiple Cisco IOSvL2 switches simultaneously across branch locations. Built with Python and Tkinter, it automates complex networking configurations while maintaining safety and security best practices.
+
+<Info>
+**Target Firmware:** `vios_l2-ADVENTERPRISEK9-M`, IOS Experimental 15.2(20200924:215240)
+</Info>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Multi-Branch Automation" icon="network-wired" color="#58a6ff">
+    Configure multiple switches across branch locations simultaneously via SSH using Netmiko
+  </Card>
+  
+  <Card title="VLAN Segmentation" icon="sitemap" color="#58a6ff">
+    Create VLANs, assign ports (access/trunk), and link DHCP pools with intelligent port management
+  </Card>
+  
+  <Card title="Advanced Security" icon="shield-halved" color="#3fb950">
+    Device hardening with enable secret (MD5), login block-for protection, and customizable banner MOTD
+  </Card>
+  
+  <Card title="GRE over IPsec" icon="lock" color="#3fb950">
+    Encrypted tunnels with IKEv1 and ESP-AES-256 supporting multicast/broadcast for routing protocols
+  </Card>
+  
+  <Card title="Quality of Service" icon="gauge-high" color="#f78166">
+    MQC-based QoS with class-maps, policy-maps, and DSCP marking for traffic prioritization
+  </Card>
+  
+  <Card title="AWS S3 Backup" icon="cloud-arrow-up" color="#f78166">
+    Automatic configuration backup to S3 with AES256 encryption and timestamped versioning
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+The application uses a modular architecture separating business logic from the UI:
+
+```
+SECURE-BRANCH-lac/
+│
+├── app.py                   # Main entry point + orchestration
+├── constants.py             # Colors, version, protected interfaces, DSCP presets
+│
+├── core/                    # Business logic (no Tkinter dependencies)
+│   ├── command_builder.py   # IOS command generation (DHCP, VLANs, ACLs, OSPF, QoS)
+│   └── connector.py         # SSH connection, L2/L3 detection, command execution
+│
+└── ui/                      # Tkinter GUI components
+    ├── widgets.py           # Styled widget factory
+    ├── tabs_sw_dhcp.py      # Tabs ① Branches and ② DHCP
+    ├── tab_vlan.py          # Tab ③ VLANs and Ports
+    ├── tab_routing.py       # Tab ④ Routing (static + OSPF)
+    ├── tab_qos.py           # Tab ⑤ QoS MQC
+    ├── tab_exec_backup.py   # Tabs ⑥ Execution and ⑦ Backup
+    └── tab_security_gre.py  # Tabs ⑧ Security and ⑨ GRE over IPsec
+```
+
+## Automatic Protections
+
+SECURE-BRANCH-lac includes built-in safety mechanisms to prevent configuration errors:
+
+| Protection | Details |
+|------------|--------|
+| **GigabitEthernet0/0** | Never modified (management uplink interface) to prevent lockout |
+| **SSH/VTY/Crypto Keys** | Existing SSH configuration is never touched |
+| **Layer 2 Detection** | Automatically detects L2-only switches and skips `ip routing` and SVI IPs |
+| **Selective Cleanup** | Only removes configurations created by this app; preserves existing routes and OSPF |
+| **Enable Secret Timing** | Applied at the **end** of deployment to avoid closing active SSH sessions |
+
+## Configuration Workflow
+
+The application organizes configuration into 9 logical tabs:
+
+<Steps>
+  <Step title="Branches">
+    Add switches with IP addresses, SSH credentials, and test connectivity
+  </Step>
+  
+  <Step title="DHCP Pools">
+    Define DHCP pools with network, subnet mask, and gateway configuration
+  </Step>
+  
+  <Step title="VLANs and Ports">
+    Create VLANs, assign ports as access or trunk, and link DHCP pools
+  </Step>
+  
+  <Step title="Routing">
+    Enable IP routing, configure static routes, default gateway, and OSPF
+  </Step>
+  
+  <Step title="QoS MQC">
+    Build class-maps (DSCP/IP/ACL), policy-maps (police/shape/priority), and apply service-policies
+  </Step>
+  
+  <Step title="Execution">
+    Select branches and deploy configuration with real-time logging
+  </Step>
+  
+  <Step title="Backup">
+    Export/import JSON, download running-config locally, or upload to AWS S3
+  </Step>
+  
+  <Step title="Security">
+    Configure enable secret, login block-for protection, and banner MOTD
+  </Step>
+  
+  <Step title="GRE/IPsec">
+    Set up encrypted GRE tunnels with IPsec protection
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install dependencies and set up your environment
+  </Card>
+  
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get started with your first switch configuration
+  </Card>
+</CardGroup>

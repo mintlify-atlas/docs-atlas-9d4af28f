@@ -1,0 +1,290 @@
+---
+title: 'Project Architecture'
+description: 'Understand the structure and organization of SECURE-BRANCH-lac'
+icon: 'sitemap'
+---
+
+## Overview
+
+SECURE-BRANCH-lac is a Python-based GUI tool for mass-configuring Cisco IOSvL2 switches across multiple branch locations. The architecture follows a clean separation between business logic, UI components, and network communication.
+
+<Info>
+**Target Firmware:** `vios_l2-ADVENTERPRISEK9-M`, IOS Experimental 15.2(20200924:215240)
+</Info>
+
+## Directory Structure
+
+The project is organized into three main layers:
+
+```
+SECURE-BRANCH-lac/
+│
+├── app.py                   # Entry point + main application class
+├── constants.py             # Colors, version, UPLINK_IFACE, DSCP_PRESETS
+│
+├── core/                    # Business logic — no Tkinter dependencies
+│   ├── command_builder.py   # Generates IOS commands (DHCP, VLANs, ACLs, OSPF, QoS)
+│   └── connector.py         # SSH connection, L2/L3 detection, command execution
+│
+└── ui/                      # Tkinter GUI components
+    ├── widgets.py            # Styled widget factory (buttons, entries, etc.)
+    ├── tabs_sw_dhcp.py       # Tabs ① Sucursales and ② DHCP
+    ├── tab_vlan.py           # Tab ③ VLANs y Puertos
+    ├── tab_routing.py        # Tab ④ Enrutamiento (routes + OSPF)
+    ├── tab_qos.py            # Tab ⑤ QoS MQC (class-map, policy-map, service-policy)
+    ├── tab_exec_backup.py    # Tabs ⑥ Ejecución and ⑦ Backup (local + AWS S3)
+    └── tab_security_gre.py   # Tabs ⑧ Seguridad and ⑨ GRE over IPsec
+```
+
+## Core Components
+
+### Main Application Class
+
+The `SwitchConfiguratorV2` class in `app.py` orchestrates the entire application:
+
+```python
+class SwitchConfiguratorV2:
+    """
+    Main class that manages global state and builds the window.
+
+    Global state (in-memory lists of dicts):
+      sucursales      : switches that the app can configure
+      dhcp_pools      : defined DHCP pools
+      vlans_data      : VLANs with their ports, DHCP and ACLs
+      static_routes   : static routes
+      ospf_networks   : networks to announce via OSPF
+      qos_classes     : QoS class-maps
+      pol_entries     : policy-map entries
+      service_policies: service-policy applications to interfaces
+      gre_tunnels     : GRE over IPsec tunnel configurations (v2.2)
+      detected_l3     : last L2/L3 detection result (can be None)
+    """
+```
+
+Source: [app.py:47-62](file:///home/daytona/workspace/source/app.py#L47-L62)
+
+### Core Layer (Business Logic)
+
+The `core/` directory contains network logic completely decoupled from the UI:
+
+<Tabs>
+  <Tab title="command_builder.py">
+    **Purpose:** Converts GUI configuration into IOS command sequences
+
+    Key function:
+    ```python
+    def build_commands(
+        is_l3: bool,
+        chk_intervlan: bool,
+        dhcp_pools: list,
+        vlans_data: list,
+        static_routes: list,
+        # ... more parameters
+    ) -> list:
+        """
+        Generates complete list of IOS commands in global config mode.
+        """
+    ```
+
+    Responsibilities:
+    - Generate DHCP pool configurations
+    - Create VLAN and port assignment commands
+    - Build routing (static + OSPF) commands
+    - Construct QoS policies (class-map, policy-map, service-policy)
+    - Apply security settings (enable secret, login block-for, banner)
+    - Configure GRE over IPsec tunnels
+
+    Source: [command_builder.py:53-286](file:///home/daytona/workspace/source/core/command_builder.py#L53-L286)
+  </Tab>
+
+  <Tab title="connector.py">
+    **Purpose:** SSH connection management and command execution
+
+    Key functions:
+    - `make_device_params()` - Build Netmiko connection parameters
+    - `detect_l3()` - Determine if switch is Layer 2 or Layer 3
+    - `send_cmd_by_cmd()` - Send commands individually with adaptive delays
+    - `run_on_switch()` - Main orchestrator for configuration deployment
+    - `fetch_running_config()` - Download current switch configuration
+    - `test_connection()` - Test SSH connectivity and detect capabilities
+
+    <Note>
+    This module has **no Tkinter dependencies**, making it usable from CLI scripts.
+    </Note>
+
+    Source: [connector.py:1-272](file:///home/daytona/workspace/source/core/connector.py)
+  </Tab>
+</Tabs>
+
+### UI Layer (Graphical Interface)
+
+The `ui/` directory contains all Tkinter-based GUI components:
+
+- **widgets.py** - Factory for styled UI components (buttons, entries, listboxes)
+- **Tab modules** - Each file manages one or two tabs of the 9-tab workflow
+
+<Info>
+Each UI module receives the `app` instance and modifies its global state directly.
+Widgets are stored as attributes on `app` (e.g., `app.sw_listbox`).
+</Info>
+
+## Data Flow
+
+<Steps>
+  <Step title="User Input Collection">
+    User enters configuration data through the 9 tabs (switches, VLANs, routing, etc.)
+    
+    Data is stored in `app` instance variables as lists of dictionaries:
+    ```python
+    self.sucursales       = []  # switches
+    self.vlans_data       = []  # VLANs config
+    self.static_routes    = []  # routing
+    # ... etc
+    ```
+  </Step>
+
+  <Step title="SSH Connection & Detection">
+    `connector.py` establishes SSH connection and detects switch capabilities:
+    
+    ```python
+    nc = ConnectHandler(**make_device_params(sw))
+    nc.enable()
+    is_l3 = detect_l3(nc)  # Check if switch has ip routing
+    ```
+  </Step>
+
+  <Step title="Command Generation">
+    `command_builder.py` generates IOS commands based on detected capabilities:
+    
+    ```python
+    cmds = build_commands(
+        is_l3=is_l3,
+        dhcp_pools=app.dhcp_pools,
+        vlans_data=app.vlans_data,
+        # ... all configuration parameters
+    )
+    ```
+  </Step>
+
+  <Step title="Command Execution">
+    `connector.py` sends commands one-by-one with adaptive timing:
+    
+    ```python
+    nc.config_mode()
+    send_cmd_by_cmd(nc, cmds, log_fn)
+    nc.exit_config_mode()
+    nc.save_config()  # write memory
+    ```
+  </Step>
+</Steps>
+
+## Separation of Concerns
+
+<CardGroup cols={2}>
+  <Card title="Business Logic" icon="code">
+    **Location:** `core/` directory
+    
+    - Pure Python logic
+    - No GUI dependencies
+    - Testable in isolation
+    - CLI-compatible
+  </Card>
+
+  <Card title="User Interface" icon="window">
+    **Location:** `ui/` directory
+    
+    - Tkinter components
+    - Event handlers
+    - Widget styling
+    - Tab management
+  </Card>
+
+  <Card title="Configuration" icon="sliders">
+    **Location:** `constants.py`
+    
+    - Colors and themes
+    - App version
+    - Protected interfaces
+    - QoS DSCP presets
+  </Card>
+
+  <Card title="Entry Point" icon="play">
+    **Location:** `app.py`
+    
+    - Main class
+    - State orchestration
+    - Tab initialization
+    - Window management
+  </Card>
+</CardGroup>
+
+## Execution Flow
+
+When you run the application:
+
+```python
+if __name__ == "__main__":
+    root = tk.Tk()
+    app  = SwitchConfiguratorV2(root)
+    root.mainloop()
+```
+
+Source: [app.py:123-126](file:///home/daytona/workspace/source/app.py#L123-L126)
+
+<Steps>
+  <Step title="Window Creation">
+    Creates Tk window with dark theme (#0d1117 background)
+  </Step>
+
+  <Step title="State Initialization">
+    Initializes empty lists for all configuration data
+  </Step>
+
+  <Step title="Notebook Creation">
+    Creates ttk.Notebook and adds 9 tab frames
+  </Step>
+
+  <Step title="Tab Building">
+    Each `build_tab_*()` function populates its frame with widgets
+  </Step>
+
+  <Step title="Event Loop">
+    `root.mainloop()` starts the Tkinter event loop
+  </Step>
+</Steps>
+
+## Design Principles
+
+<AccordionGroup>
+  <Accordion title="Modularity">
+    Each component has a single, well-defined responsibility. UI modules don't
+    generate commands; core modules don't handle GUI events.
+  </Accordion>
+
+  <Accordion title="Reusability">
+    The `core/` layer can be imported by CLI scripts or other tools without
+    requiring Tkinter installation.
+  </Accordion>
+
+  <Accordion title="Testability">
+    Pure functions in `command_builder.py` can be unit-tested without
+    connecting to real switches or rendering a GUI.
+  </Accordion>
+
+  <Accordion title="Maintainability">
+    Each tab is in its own file. Adding new features (like a 10th tab)
+    doesn't require modifying existing tab logic.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="L2 vs L3 Detection" icon="layer-group" href="/concepts/layer2-vs-layer3">
+    Learn how the app automatically detects switch capabilities
+  </Card>
+
+  <Card title="9-Tab Workflow" icon="list-check" href="/concepts/workflow">
+    Understand the step-by-step configuration process
+  </Card>
+</CardGroup>

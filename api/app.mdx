@@ -1,0 +1,151 @@
+---
+title: "app.py"
+description: "Main application class and entry point"
+---
+
+## Overview
+
+The `app.py` module contains the `SwitchConfiguratorV2` class, which orchestrates all tabs and maintains the global application state.
+
+## Module Structure
+
+```python
+app.py                      # This file: main class + entry point
+constants.py                # Colors, version, UPLINK_IFACE, DSCP_PRESETS
+core/
+  command_builder.py        # IOS command generation (no GUI)
+  connector.py              # SSH connection, L2/L3 detection, command execution
+ui/
+  widgets.py                # Styled Tkinter widget factory
+  tabs_sw_dhcp.py           # Tabs ① Branches and ② DHCP
+  tab_vlan.py               # Tab ③ VLANs and Ports
+  tab_routing.py            # Tab ④ Routing (routes + OSPF)
+  tab_qos.py                # Tab ⑤ QoS MQC
+  tab_exec_backup.py        # Tabs ⑥ Execution and ⑦ Backup (includes AWS S3)
+  tab_security_gre.py       # Tabs ⑧ Security and ⑨ GRE over IPsec
+```
+
+## SwitchConfiguratorV2
+
+Main application class that aggregates global state and builds the window.
+
+```python
+class SwitchConfiguratorV2:
+    def __init__(self, root: tk.Tk)
+```
+
+<ParamField path="root" type="tk.Tk" required>
+  The Tkinter root window instance
+</ParamField>
+
+### Global State
+
+The class maintains the following state attributes (all lists of dicts in memory):
+
+<ResponseField name="sucursales" type="list">
+  Switches that the app can configure
+</ResponseField>
+
+<ResponseField name="dhcp_pools" type="list">
+  Defined DHCP pools
+</ResponseField>
+
+<ResponseField name="vlans_data" type="list">
+  VLANs with their ports, DHCP, and ACLs
+</ResponseField>
+
+<ResponseField name="static_routes" type="list">
+  Static routes
+</ResponseField>
+
+<ResponseField name="ospf_networks" type="list">
+  Networks to announce via OSPF
+</ResponseField>
+
+<ResponseField name="qos_classes" type="list">
+  QoS class-maps
+</ResponseField>
+
+<ResponseField name="pol_entries" type="list">
+  Policy-map entries
+</ResponseField>
+
+<ResponseField name="service_policies" type="list">
+  Service-policy applications to interfaces
+</ResponseField>
+
+<ResponseField name="gre_tunnels" type="list">
+  GRE over IPsec tunnel configurations (v2.2)
+</ResponseField>
+
+<ResponseField name="detected_l3" type="bool | None">
+  Last L2/L3 detection result: True=L3, False=L2, None=not yet detected
+</ResponseField>
+
+### Window Configuration
+
+The constructor configures the main window:
+
+- **Title**: `"Configurador IOSvL2 — {APP_VERSION}"`
+- **Geometry**: 980x800 pixels
+- **Background**: #0d1117 (dark theme)
+- **Resizable**: True
+
+### Tab Structure
+
+The application creates 9 tabs:
+
+1. **① Sucursales** (Branches) - `tab_sw`
+2. **② DHCP** - `tab_dhcp`
+3. **③ VLANs y Puertos** (VLANs and Ports) - `tab_vlan`
+4. **④ Enrutamiento** (Routing) - `tab_routing`
+5. **⑤ QoS MQC** - `tab_qos`
+6. **⑥ Ejecución** (Execution) - `tab_exec`
+7. **⑦ Backup** - `tab_backup`
+8. **⑧ Seguridad** (Security) - `tab_security`
+9. **⑨ GRE/IPsec** - `tab_gre`
+
+## Entry Point
+
+The module can be executed directly to launch the application:
+
+```python
+if __name__ == "__main__":
+    root = tk.Tk()
+    app  = SwitchConfiguratorV2(root)
+    root.mainloop()
+```
+
+### How to Run
+
+From the `switch_configurator/` directory:
+
+```bash
+source env/bin/activate
+python app.py
+```
+
+## Example Usage
+
+```python
+import tkinter as tk
+from app import SwitchConfiguratorV2
+
+# Create the main window
+root = tk.Tk()
+
+# Initialize the application
+app = SwitchConfiguratorV2(root)
+
+# Access global state
+app.sucursales.append({
+    'name': 'SW-Branch-01',
+    'ip': '192.168.1.100',
+    'user': 'admin',
+    'pass': 'cisco123',
+    'secret': 'enable123'
+})
+
+# Start the GUI event loop
+root.mainloop()
+```

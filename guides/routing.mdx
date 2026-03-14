@@ -1,0 +1,269 @@
+---
+title: Routing Configuration
+description: Configure inter-VLAN routing, static routes, and OSPF
+icon: route
+---
+
+This guide covers **Tab ④** of the configurator: enabling Layer 3 routing features on switches.
+
+## Inter-VLAN Routing
+
+To allow communication between different VLANs, the switch needs to act as a Layer 3 router.
+
+<Steps>
+  <Step title="Enable IP routing">
+    Check **"Activar 'ip routing'"** to enable routing between VLANs.
+
+    **Generated IOS command**:
+    ```ios
+    ip routing
+    service dhcp
+    ```
+
+    <Info>
+      On **Layer 2 switches** (detected without `ip routing`), this command is **automatically omitted** to prevent errors.
+    </Info>
+  </Step>
+</Steps>
+
+<Note>
+  **Prerequisite**: VLANs must have SVIs with IP addresses configured (see [VLANs and Ports](/guides/vlans-ports))
+</Note>
+
+---
+
+## Static Routes
+
+Define static routes to reach networks that aren't directly connected.
+
+### Manual Static Route
+
+<Steps>
+  <Step title="Enter route details">
+    Fill in the three required fields:
+
+    | Field | Example | Description |
+    |-------|---------|-------------|
+    | **Destination** | `10.50.0.0` | Target network address |
+    | **Subnet Mask** | `255.255.255.0` | Subnet mask for the destination |
+    | **Next-hop** | `10.255.255.1` | Gateway IP to reach the destination |
+
+    Click **"+ Agregar ruta"** to add it to the list.
+  </Step>
+
+  <Step title="Review the generated command">
+    **IOS command**:
+    ```ios
+    ip route 10.50.0.0 255.255.255.0 10.255.255.1
+    ```
+  </Step>
+</Steps>
+
+### Default Route Shortcut
+
+For the most common scenario (routing all unknown traffic to the core router), use the **default route shortcut**:
+
+<Steps>
+  <Step title="Specify the gateway to R1">
+    Enter the **Next-hop IP** of your core router/gateway (R1).
+
+    Default pre-filled value: `10.255.255.1`
+
+    Click **"Agregar ruta por defecto"**
+  </Step>
+
+  <Step title="Generated default route">
+    **IOS command**:
+    ```ios
+    ip route 0.0.0.0 0.0.0.0 10.255.255.1
+    ```
+
+    <Tip>
+      This sends **all traffic** without a more specific route to R1 for internet access.
+    </Tip>
+  </Step>
+</Steps>
+
+<Warning>
+  If a default route already exists, the tool will prompt you to **replace** it or keep the existing one.
+</Warning>
+
+---
+
+## OSPF Configuration
+
+OSPF (Open Shortest Path First) dynamically advertises your VLAN subnets to the core router (R1).
+
+<Note>
+  **Why OSPF?** Without OSPF, R1 doesn't know how to reach your new VLAN subnets, so **NAT to the internet won't work**.
+</Note>
+
+### Enable OSPF
+
+<Steps>
+  <Step title="Activate OSPF">
+    Check **"Habilitar OSPF"** to enable the OSPF configuration fields.
+  </Step>
+
+  <Step title="Configure OSPF parameters">
+    | Field | Example | Description |
+    |-------|---------|-------------|
+    | **Network** | `192.168.10.0` | Network to advertise |
+    | **Wildcard** | `0.0.0.255` | Inverse of the subnet mask |
+    | **Area** | `0` | OSPF area (usually 0 for backbone) |
+    | **PID** | `1` | OSPF Process ID (must match R1) |
+
+    <Accordion title="How to calculate the wildcard mask">
+      The wildcard is the **inverse** of the subnet mask:
+
+      | Subnet Mask | Wildcard Mask |
+      |-------------|---------------|
+      | `255.255.255.0` | `0.0.0.255` |
+      | `255.255.255.128` | `0.0.0.127` |
+      | `255.255.0.0` | `0.0.255.255` |
+
+      Formula: `255 - subnet_octet = wildcard_octet`
+
+      Example for `255.255.255.0`:
+      - `255 - 255 = 0`
+      - `255 - 255 = 0`
+      - `255 - 255 = 0`
+      - `255 - 0 = 255`
+      - Result: `0.0.0.255`
+    </Accordion>
+  </Step>
+
+  <Step title="Add the OSPF network">
+    Click **"+ Agregar red"** to manually add a network.
+
+    **Generated IOS commands**:
+    ```ios
+    router ospf 1
+     network 192.168.10.0 0.0.0.255 area 0
+     exit
+    ```
+  </Step>
+</Steps>
+
+### Auto-Generate from DHCP Pools
+
+The tool can automatically create OSPF network statements from your DHCP pools:
+
+<Steps>
+  <Step title="Use the auto-generate feature">
+    Click **"⚡ Auto desde pools DHCP"**
+
+    The tool will:
+    1. Read all defined DHCP pools
+    2. Calculate the wildcard mask from each pool's subnet mask
+    3. Create OSPF `network` statements for area `0`
+
+    <Tip>
+      This is the **fastest way** to advertise all your VLANs to R1!
+    </Tip>
+  </Step>
+
+  <Step title="Review the generated networks">
+    Each pool appears in the OSPF list with its calculated wildcard:
+
+    ```
+    network 192.168.10.0 0.0.0.255 area 0  [POOL_VENTAS]
+    network 192.168.20.0 0.0.0.255 area 0  [POOL_IT]
+    network 192.168.30.0 0.0.0.255 area 0  [POOL_INVITADOS]
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Complete Routing Example
+
+Here's a full IOS configuration for a Layer 3 switch with inter-VLAN routing, default route, and OSPF:
+
+```ios Complete Routing Configuration
+! Enable IP routing
+ip routing
+service dhcp
+
+! Static default route to R1 (internet gateway)
+ip route 0.0.0.0 0.0.0.0 10.255.255.1
+
+! OSPF: advertise VLAN subnets to R1
+router ospf 1
+ network 192.168.10.0 0.0.0.255 area 0  ! VLAN 10
+ network 192.168.20.0 0.0.0.255 area 0  ! VLAN 20
+ network 192.168.30.0 0.0.0.255 area 0  ! VLAN 30
+ network 10.255.255.0 0.0.0.255 area 0  ! Uplink to R1
+ exit
+```
+
+---
+
+## Why You Need Both Static Routes and OSPF
+
+<Accordion title="Default route (static) → Sends traffic to the internet">
+  The **default route** (`0.0.0.0/0`) tells the switch where to send traffic for **unknown destinations** (the internet).
+
+  ```
+  [Switch VLAN 10] → default route → [R1] → [Internet]
+  ```
+
+  Without this, users can communicate between VLANs but **cannot reach the internet**.
+</Accordion>
+
+<Accordion title="OSPF → Tells R1 how to reach your VLANs">
+  **OSPF** advertises your VLAN subnets to R1 so it knows how to route **return traffic** back to your switch.
+
+  ```
+  [Internet] → R1 NAT → needs route → [OSPF tells R1] → [Switch VLAN 10]
+  ```
+
+  Without OSPF, R1 doesn't know how to reach your new subnets, so:
+  - **Outbound traffic** reaches the internet
+  - **Return traffic** gets dropped (R1 has no route back)
+
+  Result: **No internet access** even with a default route!
+</Accordion>
+
+<Note>
+  **Best practice**: Always configure **both** the default route (for outbound) and OSPF (for inbound NAT return traffic).
+</Note>
+
+---
+
+## Safety Features
+
+<Warning>
+  **Protected routes**: The cleanup process **only removes routes that this tool configured**.
+  
+  Existing routes (manually added or from other sources) are **never touched** to protect network connectivity.
+</Warning>
+
+<Info>
+  **OSPF preservation**: The tool never deletes the entire OSPF process.
+  
+  Only the specific `network` statements configured by the tool are removed during cleanup.
+</Info>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="QoS" icon="gauge-high" href="/guides/qos">
+    Prioritize traffic with Modular QoS CLI
+  </Card>
+  <Card title="Security" icon="shield" href="/guides/security">
+    Secure device access with enable secret and login protection
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+<Tip>
+  The routing configuration UI is implemented in:
+  - `ui/tab_routing.py` (lines 1-237)
+  - `core/command_builder.py:108-222` (command generation)
+</Tip>

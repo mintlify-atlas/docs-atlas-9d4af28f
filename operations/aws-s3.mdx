@@ -1,0 +1,536 @@
+---
+title: "AWS S3 Backup"
+description: "Backup automático de running-config a AWS S3 con cifrado SSE-AES256"
+---
+
+La función de **AWS S3 Backup** permite subir automáticamente el `running-config` de switches seleccionados a un bucket S3, con cifrado en reposo y estructura de rutas organizada.
+
+## Instalación de boto3
+
+La función requiere la librería `boto3` (AWS SDK para Python).
+
+```bash
+pip install boto3 --break-system-packages
+```
+
+<Info>
+  El flag `--break-system-packages` es necesario en sistemas con Python gestionado por el SO (Debian/Ubuntu).
+</Info>
+
+## Configuración de credenciales
+
+### Campos requeridos
+
+En la pestaña **⑦ Backup**, sección "☁ Backup en AWS S3":
+
+| Campo | Descripción | Ejemplo |
+|-------|-------------|---------||
+| **Access Key ID** | Clave de acceso AWS IAM | `AKIAIOSFODNN7EXAMPLE` |
+| **Secret Access Key** | Clave secreta AWS IAM | `wJalrXUtnFEMI/K7MDENG/...` |
+| **Región AWS** | Región del bucket S3 | `us-east-1` |
+| **Bucket S3** | Nombre del bucket (sin `s3://`) | `mi-bucket-backups` |
+| **Prefijo/carpeta** | Ruta base dentro del bucket | `backups/switches/` |
+
+<Warning>
+  Las credenciales AWS **NO se guardan en disco** ni se exportan en el JSON.
+  
+  Debes ingresarlas manualmente cada vez que inicias la aplicación.
+</Warning>
+
+Código en `ui/tab_exec_backup.py:261-292`:
+
+```python
+# Campos de credenciales AWS
+cred_grid = make_frame(frm_s3)
+cred_grid.pack(fill="x", pady=4)
+
+# Fila 0: Access Key + Secret Key
+make_label(cred_grid, "Access Key ID:", width=18).grid(row=0, column=0, sticky="w", pady=2)
+app.s3_access_key = make_entry(cred_grid, width=26)
+app.s3_access_key.grid(row=0, column=1, padx=4)
+
+make_label(cred_grid, "Secret Access Key:", width=18).grid(row=0, column=2, sticky="w")
+app.s3_secret_key = make_entry(cred_grid, width=34, show="*")
+app.s3_secret_key.grid(row=0, column=3, padx=4)
+
+# Fila 1: Region + Bucket + Prefijo
+make_label(cred_grid, "Región AWS:", width=18).grid(row=1, column=0, sticky="w", pady=2)
+app.s3_region = make_entry(cred_grid, width=16)
+app.s3_region.insert(0, "us-east-1")
+app.s3_region.grid(row=1, column=1, padx=4, sticky="w")
+
+make_label(cred_grid, "Bucket S3:", width=18).grid(row=1, column=2, sticky="w")
+app.s3_bucket = make_entry(cred_grid, width=24)
+app.s3_bucket.insert(0, "mi-bucket-backups")
+app.s3_bucket.grid(row=1, column=3, padx=4, sticky="w")
+```
+
+### Crear credenciales IAM
+
+<Steps>
+  <Step title="Abre la consola de AWS IAM">
+    https://console.aws.amazon.com/iam/
+  </Step>
+  
+  <Step title="Crea un usuario nuevo">
+    Users → Add users → Nombre: `switch-backup-user`
+  </Step>
+  
+  <Step title="Adjunta la política S3">
+    Permisos mínimos requeridos:
+    
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:PutObject",
+            "s3:GetBucketLocation",
+            "s3:ListBucket"
+          ],
+          "Resource": [
+            "arn:aws:s3:::mi-bucket-backups",
+            "arn:aws:s3:::mi-bucket-backups/*"
+          ]
+        }
+      ]
+    }
+    ```
+  </Step>
+  
+  <Step title="Genera Access Keys">
+    Security credentials → Create access key → Guarda el Access Key ID y Secret Access Key.
+  </Step>
+</Steps>
+
+<Note>
+  Nunca compartas las Secret Access Keys. Si se comprometen, elimínalas inmediatamente desde la consola IAM.
+</Note>
+
+## Estructura de rutas en S3
+
+Los backups se organizan automáticamente:
+
+```
+<prefijo>/<nombre-sucursal>/<YYYY-MM-DD_HH-MM-SS>.txt
+```
+
+### Ejemplos
+
+| Prefijo | Sucursal | Timestamp | Ruta completa |
+|---------|----------|-----------|---------------|
+| `backups/switches/` | `SW-CDMX` | `2025-04-10_14-30-00` | `backups/switches/SW-CDMX/2025-04-10_14-30-00.txt` |
+| `prod/configs/` | `SW-MTY` | `2025-04-15_09-15-30` | `prod/configs/SW-MTY/2025-04-15_09-15-30.txt` |
+| `` (vacío) | `SW-GDL` | `2025-04-20_18-45-10` | `SW-GDL/2025-04-20_18-45-10.txt` |
+
+Código en `ui/tab_exec_backup.py:608-611`:
+
+```python
+# Formato: backups/switches/SW-NOMBRE/2025-01-15_10-30-00.txt
+safe_name = sw_name.replace(" ", "_")
+s3_key    = f"{prefix}/{safe_name}/{timestamp}.txt"
+```
+
+<Tip>
+  Los espacios en nombres de sucursales se reemplazan por guiones bajos (`_`) para evitar problemas con URLs de S3.
+</Tip>
+
+## Cifrado SSE-AES256
+
+Todos los objetos se cifran automáticamente en reposo con **SSE-S3** (Server-Side Encryption con claves gestionadas por AWS).
+
+### ¿Qué es SSE-AES256?
+
+- **SSE**: Server-Side Encryption (cifrado en el servidor)
+- **AES256**: Advanced Encryption Standard con clave de 256 bits
+- **Gestionado por AWS**: Las claves de cifrado son administradas automáticamente por S3
+
+Código en `ui/tab_exec_backup.py:626-632`:
+
+```python
+client.put_object(
+    Bucket               = bucket,
+    Key                  = s3_key,
+    Body                 = content,
+    ContentType          = "text/plain; charset=utf-8",
+    ServerSideEncryption = "AES256",  # cifrado en reposo (SSE-S3)
+)
+```
+
+<Info>
+  El cifrado SSE-AES256 es **gratuito** y se aplica automáticamente. No requiere configuración adicional.
+</Info>
+
+### Alternativas de cifrado
+
+Si necesitas control total de las claves de cifrado, puedes modificar el código para usar:
+
+<CodeGroup>
+
+```python SSE-KMS (AWS Key Management Service)
+client.put_object(
+    Bucket               = bucket,
+    Key                  = s3_key,
+    Body                 = content,
+    ServerSideEncryption = "aws:kms",
+    SSEKMSKeyId          = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234-..."
+)
+```
+
+```python SSE-C (Customer-Provided Keys)
+import base64
+import hashlib
+
+key = b'my-32-byte-encryption-key-here'
+key_md5 = base64.b64encode(hashlib.md5(key).digest()).decode()
+
+client.put_object(
+    Bucket                        = bucket,
+    Key                           = s3_key,
+    Body                          = content,
+    SSECustomerAlgorithm          = "AES256",
+    SSECustomerKey                = base64.b64encode(key).decode(),
+    SSECustomerKeyMD5             = key_md5
+)
+```
+
+</CodeGroup>
+
+## Encabezado con metadatos
+
+Cada archivo subido a S3 incluye un encabezado con información del backup:
+
+```text
+# Backup generado por Configurador IOSvL2
+# Sucursal : SW-CDMX  (192.168.1.10)
+# Fecha    : 2025-04-10 14:30:00
+# Bucket   : s3://mi-bucket-backups/backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+############################################################
+
+Building configuration...
+
+Current configuration : 4532 bytes
+!
+version 15.2
+...
+```
+
+Código en `ui/tab_exec_backup.py:613-621`:
+
+```python
+header = (
+    f"# Backup generado por Configurador IOSvL2\n"
+    f"# Sucursal : {sw_name}  ({sw['ip']})\n"
+    f"# Fecha    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    f"# Bucket   : s3://{bucket}/{s3_key}\n"
+    f"{'#'*60}\n\n"
+)
+content = (header + raw).encode("utf-8")
+```
+
+## Uso
+
+### Subir backups a S3
+
+<Steps>
+  <Step title="Configura credenciales AWS">
+    Ingresa Access Key ID, Secret Access Key, Región, Bucket y Prefijo.
+  </Step>
+  
+  <Step title="Verifica credenciales (opcional)">
+    Haz clic en "🔍 Verificar credenciales S3" para confirmar que el bucket es accesible.
+  </Step>
+  
+  <Step title="Selecciona sucursales">
+    En la pestaña **① Sucursales**, selecciona los switches de los que quieres hacer backup.
+  </Step>
+  
+  <Step title="Haz clic en '☁ Subir a S3'">
+    El proceso:
+    
+    1. Conecta por SSH a cada switch
+    2. Ejecuta `show running-config`
+    3. Construye la clave S3 con timestamp
+    4. Sube el archivo con cifrado SSE-AES256
+    5. Muestra resultado en la vista previa
+  </Step>
+</Steps>
+
+### Verificar credenciales S3
+
+Antes de subir backups, puedes verificar que las credenciales son válidas:
+
+```python
+def verify_s3_credentials(app):
+    """
+    Verifica las credenciales S3 haciendo un 'head_bucket' (operación de bajo costo).
+    """
+    try:
+        client, bucket = _get_s3_client(app)
+        # head_bucket: verifica que el bucket existe y que tenemos acceso.
+        # No descarga ni sube datos; costo AWS: $0.
+        client.head_bucket(Bucket=bucket)
+        messagebox.showinfo(
+            "S3 OK ✔",
+            f"Conexión exitosa al bucket:\n  s3://{bucket}\n\n"
+            "Las credenciales son válidas."
+        )
+    except Exception as e:
+        messagebox.showerror("Error S3", f"No se pudo conectar al bucket:\n{e}")
+```
+
+Ver `ui/tab_exec_backup.py:550-572`
+
+<Info>
+  La operación `head_bucket` **no tiene costo** en AWS. Solo verifica permisos sin descargar ni subir datos.
+</Info>
+
+## Creación del cliente S3
+
+El cliente boto3 se crea con credenciales explícitas (no usa el perfil `~/.aws/credentials`):
+
+```python
+def _get_s3_client(app):
+    """
+    Crea y retorna un cliente boto3 de S3 con las credenciales ingresadas en la GUI.
+    """
+    try:
+        import boto3
+    except ImportError:
+        raise ImportError(
+            "boto3 no está instalado.\n"
+            "Ejecuta en la terminal:\n"
+            "  pip install boto3 --break-system-packages"
+        )
+    
+    access_key = app.s3_access_key.get().strip()
+    secret_key = app.s3_secret_key.get().strip()
+    region     = app.s3_region.get().strip()
+    bucket     = app.s3_bucket.get().strip()
+    
+    if not all([access_key, secret_key, region, bucket]):
+        raise ValueError(
+            "Completa todos los campos de AWS S3:\n"
+            "Access Key ID, Secret Access Key, Región y Bucket."
+        )
+    
+    # Crear cliente con credenciales explícitas
+    client = boto3.client(
+        "s3",
+        region_name          = region,
+        aws_access_key_id    = access_key,
+        aws_secret_access_key = secret_key,
+    )
+    return client, bucket
+```
+
+Ver `ui/tab_exec_backup.py:506-548`
+
+## Flujo completo de backup_to_s3
+
+```python
+def backup_to_s3(app):
+    """
+    Sube el running-config de cada sucursal seleccionada a AWS S3.
+    
+    Flujo por sucursal:
+      1. Conectar por SSH y obtener running-config (fetch_running_config).
+      2. Construir la clave S3: <prefijo>/<hostname>/<YYYY-MM-DD_HH-MM-SS>.txt
+      3. Subir el contenido (string → bytes UTF-8) con put_object.
+      4. Registrar resultado en la vista previa.
+    """
+    if not _validate_sucursales(app): return
+    targets = _get_selected_sucursales(app)
+    if not targets: return
+    
+    # Validar credenciales antes de conectar a los switches
+    try:
+        client, bucket = _get_s3_client(app)
+    except (ImportError, ValueError) as e:
+        messagebox.showerror("Error S3", str(e))
+        return
+    
+    prefix    = app.s3_prefix.get().strip().rstrip("/")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    results   = []
+    
+    for sw in targets:
+        sw_name = sw['name']
+        try:
+            # 1. Obtener running-config vía SSH
+            raw = fetch_running_config(sw)
+            
+            # 2. Construir clave S3
+            safe_name = sw_name.replace(" ", "_")
+            s3_key    = f"{prefix}/{safe_name}/{timestamp}.txt"
+            
+            # 3. Encabezado con metadatos
+            header = (
+                f"# Backup generado por Configurador IOSvL2\n"
+                f"# Sucursal : {sw_name}  ({sw['ip']})\n"
+                f"# Fecha    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"# Bucket   : s3://{bucket}/{s3_key}\n"
+                f"{'#'*60}\n\n"
+            )
+            content = (header + raw).encode("utf-8")
+            
+            # 4. Subir a S3
+            client.put_object(
+                Bucket               = bucket,
+                Key                  = s3_key,
+                Body                 = content,
+                ContentType          = "text/plain; charset=utf-8",
+                ServerSideEncryption = "AES256",  # cifrado en reposo (SSE-S3)
+            )
+            msg = f"  ✔ {sw_name} → s3://{bucket}/{s3_key}"
+            results.append(msg)
+            
+        except Exception as e:
+            msg = f"  ✘ {sw_name} → Error: {e}"
+            results.append(msg)
+    
+    # Mostrar resultados
+    summary = "\n".join(results)
+    _show_in_preview(app, f"=== Backup S3 — {timestamp} ===\n\n{summary}")
+    
+    ok_count   = sum(1 for r in results if "✔" in r)
+    fail_count = len(results) - ok_count
+    messagebox.showinfo(
+        "Backup S3 completado",
+        f"Bucket: s3://{bucket}\n\n"
+        f"✔ Exitosos : {ok_count}\n"
+        f"✘ Fallidos : {fail_count}\n\n"
+        + summary
+    )
+```
+
+Ver `ui/tab_exec_backup.py:574-653`
+
+## Resultado del backup
+
+Después de subir, aparece un resumen en la vista previa:
+
+```
+=== Backup S3 — 2025-04-10_14-30-00 ===
+
+  ✔ SW-CDMX → s3://mi-bucket-backups/backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+  ✔ SW-MTY → s3://mi-bucket-backups/backups/switches/SW-MTY/2025-04-10_14-30-00.txt
+  ✘ SW-GDL → Error: [Errno 113] No route to host
+```
+
+Y un mensaje emergente:
+
+```
+Backup S3 completado
+
+Bucket: s3://mi-bucket-backups
+
+✔ Exitosos : 2
+✘ Fallidos : 1
+
+  ✔ SW-CDMX → s3://mi-bucket-backups/backups/switches/SW-CDMX/2025-04-10_14-30-00.txt
+  ✔ SW-MTY → s3://mi-bucket-backups/backups/switches/SW-MTY/2025-04-10_14-30-00.txt
+  ✘ SW-GDL → Error: [Errno 113] No route to host
+```
+
+## Errores comunes
+
+### boto3 no instalado
+
+```
+boto3 no está instalado.
+Ejecuta en la terminal:
+  pip install boto3 --break-system-packages
+```
+
+**Solución**: Instala boto3 según el mensaje.
+
+### Credenciales inválidas
+
+```
+No se pudo conectar al bucket:
+An error occurred (InvalidAccessKeyId) when calling the HeadBucket operation: 
+The AWS Access Key Id you provided does not exist in our records.
+```
+
+**Solución**: Verifica Access Key ID y Secret Access Key en la consola IAM.
+
+### Bucket no encontrado
+
+```
+No se pudo conectar al bucket:
+An error occurred (NoSuchBucket) when calling the HeadBucket operation: 
+The specified bucket does not exist
+```
+
+**Solución**: 
+- Verifica que el bucket existe en la región especificada
+- Crea el bucket desde la consola S3 si no existe
+
+### Permisos insuficientes
+
+```
+An error occurred (AccessDenied) when calling the PutObject operation: 
+Access Denied
+```
+
+**Solución**: Adjunta la política de IAM con permisos `s3:PutObject` al usuario.
+
+## Costos de AWS
+
+| Operación | Costo aproximado (us-east-1) |
+|-----------|------------------------------|
+| `head_bucket` (verificar credenciales) | $0.00 |
+| `put_object` (subir 10 KB) | $0.0000004 |
+| Almacenamiento S3 Standard (1 GB/mes) | $0.023 |
+| Transferencia de salida (descargar desde S3) | $0.09/GB |
+
+<Tip>
+  Los primeros 5 GB de transferencia de salida al mes son **gratuitos** en el Free Tier de AWS.
+</Tip>
+
+## Seguridad
+
+### Buenas prácticas
+
+1. **Rotación de credenciales**: Cambia Access Keys cada 90 días
+2. **Política de bucket**: Habilita bloqueo de acceso público
+3. **Versionado**: Activa S3 Versioning para recuperar backups anteriores
+4. **Lifecycle policies**: Archiva backups antiguos a Glacier después de 90 días
+5. **MFA Delete**: Requiere autenticación multifactor para borrar objetos
+
+### Ejemplo de Bucket Policy
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnencryptedObjectUploads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::mi-bucket-backups/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "AES256"
+        }
+      }
+    }
+  ]
+}
+```
+
+Esta política **fuerza** el uso de cifrado SSE-AES256 en todos los objetos.
+
+## Referencia de código
+
+| Archivo | Líneas | Descripción |
+|---------|--------|-------------|
+| `ui/tab_exec_backup.py:254-302` | 48 líneas | Sección AWS S3 en la pestaña Backup |
+| `ui/tab_exec_backup.py:506-548` | 42 líneas | Función `_get_s3_client()` |
+| `ui/tab_exec_backup.py:550-572` | 22 líneas | Función `verify_s3_credentials()` |
+| `ui/tab_exec_backup.py:574-653` | 79 líneas | Función `backup_to_s3()` |
+| `core/connector.py:218-238` | 20 líneas | Función `fetch_running_config()` |

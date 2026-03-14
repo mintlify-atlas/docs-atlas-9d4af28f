@@ -1,0 +1,246 @@
+---
+title: VLANs and Ports Configuration
+description: Create VLANs, assign ports, and configure security ACLs
+icon: sitemap
+---
+
+This guide covers **Tab ③** of the configurator: creating VLANs and assigning physical switch ports.
+
+## VLAN Configuration
+
+Each VLAN represents a logical network segment. You can configure multiple VLANs per switch.
+
+<Steps>
+  <Step title="Define VLAN basics">
+    Enter the VLAN identification:
+
+    - **VLAN ID**: Numeric ID (1-4094), e.g., `10`, `20`, `100`
+    - **VLAN Name**: Descriptive name, e.g., `VENTAS`, `IT`, `INVITADOS`
+
+    <Note>
+      VLAN 1 is the native VLAN and cannot be deleted. It's reserved for management.
+    </Note>
+  </Step>
+
+  <Step title="Assign a DHCP pool (optional)">
+    Check **"Asignar pool DHCP"** to link this VLAN to a DHCP pool.
+
+    - Select the pool from the dropdown
+    - The pool's gateway IP will become the **SVI IP** on Layer 3 switches
+    - Click the **↻** button to refresh the list if you added pools after opening this tab
+
+    <Info>
+      **On Layer 2 switches**: DHCP pools are not configured on the switch. The router (R1) handles DHCP via router-on-a-stick.
+      
+      **On Layer 3 switches**: The SVI receives the gateway IP from the pool and the switch provides DHCP service.
+    </Info>
+  </Step>
+
+  <Step title="Assign physical ports">
+    Check **"Asignar puertos a esta VLAN"** to configure port assignments.
+
+    ### Port Range Syntax
+
+    You can specify ports in multiple formats:
+
+    | Format | Example | Description |
+    |--------|---------|-------------|
+    | **Range** | `Gi0/1-3` | Ports 1, 2, and 3 |
+    | **List** | `Gi0/1,Gi0/3` | Ports 1 and 3 only |
+    | **Single** | `Gi0/2` | Port 2 only |
+
+    <Warning>
+      **Never use `GigabitEthernet0/0`** — this is the protected uplink interface!
+    </Warning>
+
+    ### Port Mode
+
+    Select the appropriate mode:
+
+    <CodeGroup>
+      ```text Access Mode
+      access = One VLAN per port
+      → For end-user devices (PCs, phones, printers)
+      → Enables spanning-tree portfast (no 30-second delay)
+      ```
+
+      ```text Trunk Mode
+      trunk = Multiple VLANs on one port
+      → For inter-switch links or router uplinks
+      → Uses 802.1Q encapsulation
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure security ACLs (optional)">
+    You can apply access control lists to the VLAN's SVI.
+
+    ### Social Media Blocking
+
+    Check **"Bloquear Redes Sociales"** to block Facebook and Twitter on HTTPS (port 443).
+
+    **Generated ACL entries**:
+    ```ios
+    deny tcp any host 157.240.22.35 eq 443  ! Facebook
+    deny tcp any host 104.244.42.1  eq 443  ! Twitter/X
+    ```
+
+    ### Custom ACL Rules
+
+    Add custom extended ACL rules in the text area. Enter one rule per line:
+
+    ```ios
+    deny ip host 10.0.0.5 any
+    deny tcp any any eq 23
+    permit tcp any any eq 22
+    ```
+
+    <Info>
+      The ACL always ends with `permit ip any any` to allow all other traffic.
+    </Info>
+  </Step>
+
+  <Step title="Save the VLAN">
+    Click **"✚ Guardar VLAN"** to add it to your configuration.
+
+    The VLAN appears in the list with:
+    - VLAN ID and name
+    - Associated DHCP pool (if any)
+    - Port assignments
+    - Port mode (ACCESS/TRUNK)
+  </Step>
+</Steps>
+
+---
+
+## Generated IOS Commands
+
+### Example: Access Mode VLAN
+
+```ios VLAN 10 (Ventas) — Access Mode
+! Create VLAN
+vlan 10
+name VENTAS
+exit
+
+! Assign ports in access mode
+interface range GigabitEthernet0/1-3
+ switchport mode access
+ switchport access vlan 10
+ spanning-tree portfast
+ no shutdown
+ exit
+
+! Configure SVI with DHCP pool IP (Layer 3 only)
+interface vlan 10
+ ip address 192.168.10.1 255.255.255.0
+ no shutdown
+ exit
+```
+
+### Example: Trunk Mode VLAN
+
+```ios VLAN 20 (IT) — Trunk Mode
+! Create VLAN
+vlan 20
+name IT
+exit
+
+! Configure trunk port (uplink to another switch)
+interface GigabitEthernet0/1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan add 20
+ no shutdown
+ exit
+```
+
+### Example: VLAN with Security ACL
+
+```ios VLAN 30 (Guests) — With Social Media Block
+! Create VLAN
+vlan 30
+name INVITADOS
+exit
+
+! Create security ACL
+ip access-list extended SEGURIDAD_VLAN_30
+ deny tcp any host 157.240.22.35 eq 443  ! Block Facebook
+ deny tcp any host 104.244.42.1  eq 443  ! Block Twitter
+ permit ip any any
+ exit
+
+! Configure SVI and apply ACL
+interface vlan 30
+ ip address 192.168.30.1 255.255.255.0
+ ip access-group SEGURIDAD_VLAN_30 in
+ no shutdown
+ exit
+```
+
+---
+
+## Port Expansion Logic
+
+The tool automatically normalizes port names to the full format required by IOS 15.x:
+
+| User Input | Normalized Output |
+|------------|-------------------|
+| `Gi0/1-3` | `GigabitEthernet0/1-3` |
+| `gi0/1,gi0/3` | `GigabitEthernet0/1, GigabitEthernet0/3` |
+| `Fa0/2` | `FastEthernet0/2` |
+
+<Tip>
+  See `core/command_builder.py:19-50` for the `expand_ports()` function implementation.
+</Tip>
+
+---
+
+## Layer 2 vs Layer 3 Behavior
+
+<Accordion title="Layer 2 Switches">
+  On switches **without** `ip routing`:
+
+  - VLANs are created
+  - Ports are assigned (access/trunk)
+  - **No SVI IPs** are configured
+  - **No DHCP pools** are configured
+  - ACLs are **not applied** (require Layer 3 SVIs)
+
+  The router (R1) must handle inter-VLAN routing and DHCP.
+</Accordion>
+
+<Accordion title="Layer 3 Switches">
+  On switches **with** `ip routing`:
+
+  - VLANs are created
+  - Ports are assigned (access/trunk)
+  - **SVI gets the gateway IP** from the linked DHCP pool
+  - **DHCP pools are configured** on the switch
+  - **Security ACLs are applied** to the SVI (inbound direction)
+
+  The switch acts as the gateway and DHCP server for each VLAN.
+</Accordion>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Routing" icon="route" href="/guides/routing">
+    Configure static routes and OSPF for inter-VLAN routing
+  </Card>
+  <Card title="QoS" icon="gauge-high" href="/guides/qos">
+    Prioritize voice, video, and critical data traffic
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+<Tip>
+  The VLAN configuration UI is implemented in:
+  - `ui/tab_vlan.py` (lines 1-211)
+  - `core/command_builder.py:130-207` (command generation)
+</Tip>

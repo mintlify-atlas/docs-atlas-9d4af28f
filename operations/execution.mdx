@@ -1,0 +1,256 @@
+---
+title: "Ejecución"
+description: "Tab ⑥ Ejecución - Aplicar configuración a switches seleccionados"
+---
+
+La pestaña **⑥ Ejecución** permite aplicar o limpiar la configuración en los switches seleccionados, con un log de consola en tiempo real.
+
+## Funcionalidad principal
+
+### Seleccionar sucursales
+
+Antes de ejecutar, selecciona las sucursales objetivo en la pestaña **① Sucursales**. Puedes seleccionar múltiples switches manteniendo presionada la tecla `Ctrl`.
+
+<Warning>
+  Si no hay sucursales seleccionadas, aparecerá el mensaje:
+  
+  "Selecciona al menos una sucursal en la pestaña ①."
+</Warning>
+
+### Aplicar configuración
+
+<Steps>
+  <Step title="Selecciona las sucursales">
+    En la pestaña **① Sucursales**, haz clic en las sucursales donde quieres aplicar la configuración.
+  </Step>
+  
+  <Step title="Haz clic en 'APLICAR A SUCURSALES SELECCIONADAS'">
+    Se te preguntará si deseas limpiar la configuración anterior antes de aplicar (recomendado para re-configurar).
+  </Step>
+  
+  <Step title="Monitorea el log de consola">
+    El log mostrará en tiempo real:
+    - Conexión SSH a cada switch
+    - Detección Layer 2 vs Layer 3
+    - Limpieza de configuración (si aplica)
+    - Comandos enviados uno por uno
+    - Resultado final (exitoso/fallido)
+  </Step>
+</Steps>
+
+## Flujo de ejecución
+
+El código en `core/connector.py:129-216` implementa el flujo completo:
+
+```python
+def run_on_switch(sw: dict, config_params: dict, do_clean: bool = False, log_fn=None) -> bool:
+    """
+    Flujo:
+      1. Conectar por SSH y entrar a modo enable.
+      2. Detectar si es Layer 2 o Layer 3.
+      3. Opcional: limpiar config previa (sin tocar SSH/acceso remoto).
+      4. Generar y enviar los comandos de configuración.
+      5. Guardar la config (write memory / copy run start).
+      6. Desconectar.
+    """
+```
+
+### Detección Layer 2 vs Layer 3
+
+El sistema detecta automáticamente si el switch tiene `ip routing` activo:
+
+- **Layer 3**: Se configuran SVIs con IP, rutas estáticas y OSPF
+- **Layer 2**: Se omiten comandos de enrutamiento
+
+Detección en `core/connector.py:50-69`:
+
+```python
+def detect_l3(nc) -> bool:
+    """
+    Detecta si el switch tiene ip routing activo (Layer 3) o no (Layer 2).
+    
+    Estrategia: ejecuta 'show ip route connected' y busca líneas que comiencen
+    con 'C' (ruta directamente conectada). Si las hay, el switch enruta.
+    """
+    try:
+        out = nc.send_command("show ip route connected", delay_factor=2)
+        return bool(re.search(r'^C\s+', out, re.MULTILINE))
+    except Exception:
+        return False   # Si falla, asumimos L2 por seguridad
+```
+
+## Log de consola
+
+El área de log muestra:
+
+```
+══════════════════════════════════════════════════════════
+  INICIO DESPLIEGUE — 2 sucursal(es)
+  2025-04-10 14:30:00
+══════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────
+  Sucursal: SW-CDMX  |  192.168.1.10
+────────────────────────────────────────────────────────
+  ✔ Conectado: 'SW-CDMX'  |  Layer 3
+  [Limpieza] 5 comandos...
+  [1/5] no ip dhcp pool POOL-VLAN10
+  [2/5] no interface Vlan10
+  ...
+  [Limpieza] ✔
+  [Config] Enviando 42 comandos...
+  [1/42] ip dhcp pool POOL-VLAN10
+  [2/42] network 192.168.10.0 255.255.255.0
+  ...
+  ✔ SW-CDMX — GUARDADO EXITOSAMENTE
+
+══════════════════════════════════════════════════════════
+  RESULTADO: 2 exitosa(s)  |  0 fallida(s)
+══════════════════════════════════════════════════════════
+```
+
+<Info>
+  El log usa `tk.END` para hacer scroll automático al final, permitiendo ver el progreso en tiempo real.
+  
+  Ver `ui/tab_exec_backup.py:61-65`
+</Info>
+
+## Limpieza de configuración
+
+### ¿Cuándo limpiar?
+
+<Tip>
+  Se recomienda limpiar antes de aplicar cuando:
+  
+  - Estás re-configurando un switch ya configurado
+  - Cambiaste VLANs, pools DHCP o rutas
+  - Quieres eliminar configuración antigua
+</Tip>
+
+### ¿Qué se limpia?
+
+La limpieza **solo borra lo que la app configuró**. **Nunca** se tocan:
+
+- SSH / VTY / crypto key
+- `GigabitEthernet0/0` (uplink de gestión)
+- Configuración preexistente no gestionada por la app
+
+Código en `ui/tab_exec_backup.py:162-203`:
+
+```python
+def clean_switch(app):
+    """
+    Limpia la configuración de las sucursales seleccionadas
+    sin tocar SSH, usuarios ni crypto key.
+    """
+    from core.command_builder import build_cleanup_commands
+    
+    cleanup = build_cleanup_commands(
+        nc,
+        app.static_routes,
+        app.ospf_networks,
+        log_fn=lambda msg: _log(app, msg),
+    )
+```
+
+## Envío comando por comando
+
+¿Por qué no usar `send_config_set()`?
+
+<Note>
+  Algunos comandos (OSPF, `ip route`) recalculan la tabla de routing y necesitan más tiempo.
+  
+  El método `send_cmd_by_cmd()` ajusta el delay por comando automáticamente.
+</Note>
+
+Implementación en `core/connector.py:72-127`:
+
+```python
+def send_cmd_by_cmd(nc, commands: list, log_fn=None):
+    for idx, cmd in enumerate(commands):
+        if log_fn:
+            log_fn(f"  [{idx+1}/{len(commands)}] {cmd}")
+        
+        # Comandos lentos: routing/OSPF recalculan SPF o tablas de enrutamiento.
+        is_slow = any(k in cmd.lower() for k in
+                      ("ospf", "network", "router", "ip route", "no router"))
+        delay        = 6   if is_slow else 2
+        read_timeout = 120 if is_slow else 60
+        
+        out = nc.send_command_timing(
+            cmd,
+            delay_factor=delay,
+            read_timeout=read_timeout,
+        )
+        
+        # Pausa extra para comandos lentos
+        time.sleep(1.0 if is_slow else 0.15)
+```
+
+## Protecciones automáticas
+
+| Protección | Detalle |
+|------------|---------||
+| `GigabitEthernet0/0` | Nunca se modifica (uplink de gestión) |
+| SSH / VTY / crypto key | Nunca se tocan |
+| Switches L2 | Se omite `ip routing` y SVIs con IP (detección automática) |
+| Enable secret | Se aplica **al final** del deploy para no cerrar la sesión SSH activa |
+| Limpieza | Solo borra lo que la app configuró; rutas y OSPF preexistentes se preservan |
+
+## Errores comunes
+
+### Error de autenticación
+
+```
+✘ SW-CDMX — Error de Autenticación
+```
+
+**Solución**: Verifica usuario, contraseña y enable secret en la pestaña **① Sucursales**.
+
+### Timeout de conexión
+
+```
+✘ SW-CDMX — Timeout
+```
+
+**Solución**: 
+- Verifica conectividad de red al switch
+- Asegúrate de que el SSH esté habilitado
+- Aumenta el `read_timeout_override` en `connector.py:46`
+
+### Socket cerrado
+
+```
+[FATAL] Socket cerrado, abortando este switch.
+```
+
+**Solución**: El switch cerró la conexión. Puede deberse a:
+- Comando inválido que colgó el switch
+- Timeout del switch SSH (aumentar timeout)
+- Problema de red intermitente
+
+## Exportar configuración
+
+Después de una ejecución exitosa, se te preguntará:
+
+```
+¿Exportar esta configuración a .json?
+```
+
+<Tip>
+  Se recomienda exportar para tener un respaldo de la configuración aplicada.
+  
+  El JSON **no incluye contraseñas** por seguridad.
+</Tip>
+
+Ver [Backup](/operations/backup) para más detalles sobre exportación e importación.
+
+## Referencia de código
+
+| Archivo | Descripción |
+|---------|-------------|
+| `ui/tab_exec_backup.py:35-59` | Construcción de la pestaña Ejecución |
+| `ui/tab_exec_backup.py:118-160` | Función `deploy_config()` |
+| `core/connector.py:129-216` | Función `run_on_switch()` |
+| `core/connector.py:72-127` | Función `send_cmd_by_cmd()` |
+| `core/connector.py:50-69` | Función `detect_l3()` |

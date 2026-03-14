@@ -1,80 +1,407 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Configure your first Cisco switch with SECURE-BRANCH-lac in minutes
 ---
 
-## Get started in three steps
+## Launch the Application
 
-Get your documentation site running locally and make your first customization.
+With dependencies installed, launch SECURE-BRANCH-lac from the project directory:
 
-### Step 1: Set up your local environment
+<CodeGroup>
+```bash With Virtual Environment
+cd SECURE-BRANCH-lac
+source env/bin/activate
+python app.py
+```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+```bash Without Virtual Environment
+cd SECURE-BRANCH-lac
+python app.py
+```
+</CodeGroup>
+
+The GUI window will open showing **9 configuration tabs**:
+
+<Info>
+The application uses a dark theme inspired by GitHub Dark with color scheme:
+- **Primary**: `#58a6ff` (blue)
+- **Success**: `#3fb950` (green)  
+- **Accent**: `#f78166` (orange/red)
+</Info>
+
+## Basic Configuration Workflow
+
+Follow these steps to configure your first switch:
+
+<Steps>
+  <Step title="Add a Branch Switch">
+    Navigate to tab **① Sucursales** (Branches)
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    Fill in the connection details:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    | Field | Description | Example |
+    |-------|-------------|--------|
+    | **Nombre Sucursal** | Branch/switch name | `SW-CDMX` |
+    | **IP Address** | Switch management IP | `192.168.1.10` |
+    | **Usuario** | SSH username | `admin` |
+    | **Contraseña** | SSH password | `cisco123` |
+    | **Enable Secret** | Enable mode password | `enable123` |
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Click **Agregar** to add the switch to the list.
+    
+    <Tip>
+    Use the **Probar Conexión** button to verify SSH connectivity before deploying configurations.
+    </Tip>
+  </Step>
+  
+  <Step title="Create a DHCP Pool">
+    Navigate to tab **② DHCP**
+    
+    Define a DHCP pool for your network:
+    
+    | Field | Value | Example |
+    |-------|-------|--------|
+    | **Pool Name** | Descriptive name | `VLAN10-Pool` |
+    | **Network** | Network address | `192.168.10.0` |
+    | **Mask** | Subnet mask | `255.255.255.0` |
+    | **Gateway** | Default gateway | `192.168.10.1` |
+    
+    Click **Agregar** to save the pool.
+    
+    <Note>
+    DHCP pools can be linked to VLANs in the next step. Multiple VLANs can share the same pool if needed.
+    </Note>
+  </Step>
+  
+  <Step title="Configure VLANs and Ports">
+    Navigate to tab **③ VLANs y Puertos**
+    
+    Create a VLAN:
+    
+    ```
+    VLAN ID:   10
+    Name:      DATA
+    DHCP Pool: VLAN10-Pool
+    ```
+    
+    Assign ports to the VLAN:
+    
+    | Port | Mode | Purpose |
+    |------|------|--------|
+    | `GigabitEthernet0/1` | Access | End-user port |
+    | `GigabitEthernet0/2` | Access | End-user port |
+    | `GigabitEthernet1/0` | Trunk | Uplink to core |
+    
+    <Warning>
+    **GigabitEthernet0/0** is automatically protected and will never be modified. This prevents lockout from the management interface.
+    </Warning>
+  </Step>
+  
+  <Step title="Deploy Configuration">
+    Navigate to tab **⑥ Ejecución** (Execution)
+    
+    1. **Select switches** from your branch list
+    2. Click **Ejecutar Configuración**
+    3. Monitor the **real-time log** for progress
+    
+    The tool will:
+    - Connect via SSH using Netmiko
+    - Detect if the switch is Layer 2 or Layer 3
+    - Generate appropriate IOS commands
+    - Apply configuration sequentially
+    - Display success/error messages
+    
+    <Info>
+    The tool automatically detects L2-only switches and skips `ip routing` and SVI IP configuration to prevent errors.
+    </Info>
+  </Step>
+  
+  <Step title="Verify and Backup">
+    After successful deployment:
+    
+    **Option 1: Local Backup**
+    - Go to tab **⑦ Backup**
+    - Click **Descargar running-config**
+    - Select switches and save locally
+    
+    **Option 2: AWS S3 Backup**
+    - Enter AWS credentials (Access Key, Secret Key, Region, Bucket, Prefix)
+    - Click **Verificar credenciales** to test connectivity
+    - Click **Subir a S3** to backup with AES256 encryption
+    
+    **Option 3: Export Configuration**
+    - Click **Exportar a JSON** to save all settings to a JSON file
+    - Share with team or use as a template for other sites
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Example: Complete VLAN Configuration
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Here's a practical example configuring a branch office with data, voice, and guest VLANs:
 
-### Step 3: Go live
+### 1. DHCP Pools
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+| Pool Name | Network | Mask | Gateway |
+|-----------|---------|------|---------|
+| `DATA-Pool` | 192.168.10.0 | 255.255.255.0 | 192.168.10.1 |
+| `VOICE-Pool` | 192.168.20.0 | 255.255.255.0 | 192.168.20.1 |
+| `GUEST-Pool` | 192.168.30.0 | 255.255.255.0 | 192.168.30.1 |
 
-## Next steps
+### 2. VLAN Definitions
 
-Now that you have your docs running, explore these key features:
+```
+VLAN 10 - DATA  → DHCP: DATA-Pool
+VLAN 20 - VOICE → DHCP: VOICE-Pool  
+VLAN 30 - GUEST → DHCP: GUEST-Pool
+```
 
-<CardGroup cols={2}>
+### 3. Port Assignments
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+| Ports | VLAN | Mode | Description |
+|-------|------|------|-------------|
+| Gi0/1 - Gi0/10 | 10 | Access | Employee workstations |
+| Gi0/11 - Gi0/15 | 20 | Access | VoIP phones |
+| Gi0/16 - Gi0/20 | 30 | Access | Guest WiFi APs |
+| Gi1/0 | All | Trunk | Uplink to distribution |
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+### 4. Generated IOS Commands
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+The tool automatically generates:
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+<CodeGroup>
+```cisco DHCP Configuration
+ip dhcp excluded-address 192.168.10.1
+ip dhcp excluded-address 192.168.20.1  
+ip dhcp excluded-address 192.168.30.1
 
-</CardGroup>
+ip dhcp pool DATA-Pool
+ network 192.168.10.0 255.255.255.0
+ default-router 192.168.10.1
+
+ip dhcp pool VOICE-Pool
+ network 192.168.20.0 255.255.255.0
+ default-router 192.168.20.1
+
+ip dhcp pool GUEST-Pool
+ network 192.168.30.0 255.255.255.0
+ default-router 192.168.30.1
+```
+
+```cisco VLAN Configuration
+vlan 10
+ name DATA
+vlan 20
+ name VOICE
+vlan 30  
+ name GUEST
+```
+
+```cisco Port Assignments
+interface range GigabitEthernet0/1 - 10
+ switchport mode access
+ switchport access vlan 10
+
+interface range GigabitEthernet0/11 - 15
+ switchport mode access
+ switchport access vlan 20
+
+interface range GigabitEthernet0/16 - 20
+ switchport mode access
+ switchport access vlan 30
+
+interface GigabitEthernet1/0
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20,30
+```
+</CodeGroup>
+
+## Advanced Features
+
+Once comfortable with basic configuration, explore advanced features:
+
+### Routing (Tab ④)
+
+<Tip>
+Only available on Layer 3 switches. The tool auto-detects switch capabilities.
+</Tip>
+
+- **Enable IP routing**: Allows inter-VLAN routing
+- **Static routes**: Define custom routes
+- **OSPF**: Dynamic routing with network advertisements
+
+### QoS MQC (Tab ⑤)
+
+Prioritize critical traffic using Modular QoS CLI:
+
+**Built-in DSCP Presets:**
+```python
+EF  (46)  → Voice/Video low latency
+AF41 (34) → Video conferencing  
+AF31 (26) → Voice calls
+AF21 (18) → Critical data
+AF11 (10) → Normal data
+CS3  (24) → Signaling
+CS1  (8)  → Scavenger/bulk
+Default   → Best effort
+```
+
+**QoS Components:**
+- **class-map**: Match traffic by DSCP, IP, or ACL
+- **policy-map**: Define actions (police, shape, priority, set dscp)
+- **service-policy**: Apply to interfaces (input/output)
+
+### Security (Tab ⑧)
+
+Harden device access:
+
+**Enable Secret (MD5 type-5)**
+```cisco
+enable secret <password>
+```
+Uses irreversible MD5 hashing (more secure than type-7).
+
+**Login Block-for Protection**
+```cisco
+login block-for 120 attempts 5 within 60
+login on-failure log
+```
+Blocks SSH/VTY for 120 seconds after 5 failed attempts in 60 seconds.
+
+**Banner MOTD**
+```cisco
+banner motd #Unauthorized access prohibited#
+```
+Displays legal warning before login.
+
+<Warning>
+Enable secret is applied at the **end** of configuration deployment to avoid closing the active SSH session mid-deployment.
+</Warning>
+
+### GRE over IPsec (Tab ⑨)
+
+Create encrypted tunnels for site-to-site connectivity:
+
+**Why GRE + IPsec?**
+- IPsec alone cannot transport multicast/broadcast (required for OSPF, EIGRP)
+- GRE provides point-to-point tunnel supporting all traffic types
+- IPsec encrypts the entire GRE tunnel
+
+**Configuration includes:**
+- IKEv1 Phase 1 (ISAKMP policy)
+- IPsec Transform Set (ESP-AES-256)
+- Crypto Map with ACL
+- GRE Tunnel interface
+
+<Info>
+Compatible with `vios_l2 15.2` using DH group 2 (maximum supported).
+</Info>
+
+## Configuration Persistence
+
+### JSON Export/Import
+
+Save your entire configuration (all tabs) to a JSON file:
+
+```json
+{
+  "sucursales": [...],
+  "dhcp_pools": [...],
+  "vlans_data": [...],
+  "static_routes": [...],
+  "ospf_networks": [...],
+  "qos_classes": [...],
+  "gre_tunnels": [...]
+}
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+**Security:** AWS credentials are never saved to JSON files or stored on disk.
 </Note>
+
+### Running-Config Download
+
+Download the actual running configuration from each switch:
+
+- Creates text files with timestamp: `<branch-name>_<timestamp>.txt`
+- Includes metadata header (branch, IP, timestamp)
+- Select multiple switches for batch download
+
+### AWS S3 Backup
+
+Automatic cloud backup with:
+
+- **Path structure**: `<prefix>/<branch-name>/<YYYY-MM-DD_HH-MM-SS>.txt`
+- **Encryption**: Server-side AES256 (SSE)
+- **Versioning**: Timestamped filenames for history
+- **Metadata**: Branch name, IP, timestamp in file header
+
+Example S3 object:
+```
+s3://my-bucket/backups/switches/SW-CDMX/2026-03-14_10-30-45.txt
+```
+
+## Safety Features
+
+SECURE-BRANCH-lac includes multiple protections:
+
+| Protection | Behavior |
+|------------|----------|
+| **Protected Interface** | GigabitEthernet0/0 never modified |
+| **SSH Preservation** | Existing SSH config untouched |
+| **L2/L3 Detection** | Auto-detects switch type, skips incompatible commands |
+| **Selective Cleanup** | Only removes app-created config, preserves existing routes/OSPF |
+| **Enable Secret Timing** | Applied last to prevent session lockout |
+| **Credential Security** | AWS credentials never saved to disk |
+
+## Troubleshooting
+
+### Connection Failed
+
+**Check:**
+- Network connectivity: `ping <switch-ip>`
+- SSH port accessible: `telnet <switch-ip> 22`
+- Correct credentials (username/password/enable secret)
+- User has privilege 15 or enable access
+
+### Command Rejected
+
+**Common causes:**
+- Layer 2 switch receiving `ip routing` command → Tool should auto-detect; file an issue if this occurs
+- Invalid interface name → Verify interface exists with `show ip interface brief`
+- Syntax error → Check generated commands in execution log
+
+### Configuration Not Applied
+
+**Verify:**
+- Check execution log for errors
+- SSH session stayed active during deployment
+- Switch has sufficient resources (CPU/memory)
+- No conflicting existing configuration
+
+### S3 Upload Failed
+
+**Troubleshoot:**
+- Click **Verificar credenciales** to test AWS connectivity
+- Verify bucket exists and region is correct
+- Check IAM permissions (s3:PutObject required)
+- Ensure bucket name has no typos
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration Guides" icon="book" href="/guides/switches-dhcp">
+    Detailed documentation for each configuration tab
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/app">
+    Python module documentation for advanced customization
+  </Card>
+  
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts/architecture">
+    Understand the architecture and workflow
+  </Card>
+  
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

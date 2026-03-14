@@ -1,0 +1,151 @@
+---
+title: Switches and DHCP Configuration
+description: Configure branch switches and DHCP pools for VLANs
+icon: network-wired
+---
+
+This guide covers **Tabs ① and ②** of the SECURE-BRANCH-lac configurator: managing branch switches and defining DHCP pools.
+
+## Tab ① — Branch Switches (Sucursales)
+
+The first step is to add all the switches you want to configure. Each switch represents a branch location.
+
+<Steps>
+  <Step title="Add switch credentials">
+    Fill in the connection details for each switch:
+
+    - **Name/ID**: A friendly name for the branch (e.g., `SW-CDMX`, `SW-MTY`)
+    - **Management IP**: The IP address for SSH access (e.g., `192.168.100.10`)
+    - **SSH User**: Username for authentication (default: `admin`)
+    - **Password**: SSH password for the user
+    - **Enable Secret**: Password for privileged EXEC mode (`enable`)
+
+    Click **"+ Agregar sucursal"** to add the switch to the list.
+  </Step>
+
+  <Step title="Test SSH connection">
+    Before deploying configuration, verify connectivity:
+
+    1. Select a switch from the list
+    2. Click **"🔌 Probar conexión"**
+    3. The tool will detect if the switch is **Layer 2** or **Layer 3**
+
+    <Info>
+      **Layer 2 detection**: Switch does NOT have `ip routing` enabled  
+      **Layer 3 detection**: Switch has `ip routing` active and can route between VLANs
+    </Info>
+
+    The detection result shows:
+    - Hostname
+    - Layer type (L2/L3)
+    - IOS version string
+  </Step>
+
+  <Step title="Select switches for deployment">
+    When you're ready to deploy configuration:
+
+    - Use **Ctrl+Click** to select multiple switches
+    - The same configuration (VLANs, DHCP, QoS, etc.) will be applied to **all selected switches**
+  </Step>
+</Steps>
+
+### Connection Policy
+
+The tool implements strict safety policies to prevent accidental lockout:
+
+<Warning>
+  **Protected uplink**: `GigabitEthernet0/0` is the management/uplink interface and is **never modified**
+</Warning>
+
+<Note>
+  **SSH safety**: The tool never touches:
+  - SSH configuration
+  - User accounts and VTY lines
+  - Crypto keys
+</Note>
+
+---
+
+## Tab ② — DHCP Pools
+
+Define DHCP pools that will be assigned to VLANs. Each pool specifies the IP range and gateway.
+
+### DHCP Pool Configuration
+
+<Steps>
+  <Step title="Define pool parameters">
+    Enter the following for each DHCP pool:
+
+    | Field | Example | Description |
+    |-------|---------|-------------|
+    | **Pool Name** | `POOL_VENTAS` | Friendly name for the pool |
+    | **Network** | `192.168.10.0` | Network address |
+    | **Subnet Mask** | `255.255.255.0` | Subnet mask |
+    | **Gateway / SVI IP** | `192.168.10.1` | Gateway IP (the SVI on the switch) |
+
+    <Info>
+      The gateway IP is **automatically excluded** from the DHCP range to prevent conflicts.
+    </Info>
+  </Step>
+
+  <Step title="Add the pool">
+    Click **"+ Agregar Pool"** to save the pool to your configuration.
+
+    You can define multiple pools for different VLANs.
+  </Step>
+</Steps>
+
+### Layer 2 vs Layer 3 Behavior
+
+<Accordion title="DHCP on Layer 2 switches">
+  On switches without `ip routing` (Layer 2), the DHCP server should be on **R1** (the router) using **router-on-a-stick** topology.
+
+  The tool will:
+  - Skip DHCP pool configuration
+  - Not assign IP addresses to SVIs
+  - Create VLANs and assign ports only
+</Accordion>
+
+<Accordion title="DHCP on Layer 3 switches">
+  On switches with `ip routing` enabled, the tool will:
+
+  - Configure DHCP pools on the switch
+  - Assign the gateway IP to the SVI (Switch Virtual Interface)
+  - Enable `service dhcp`
+
+  **Generated IOS commands example**:
+  ```ios
+  service dhcp
+  ip dhcp excluded-address 192.168.10.1
+  ip dhcp pool POOL_VENTAS
+   network 192.168.10.0 255.255.255.0
+   default-router 192.168.10.1
+   dns-server 8.8.8.8
+   exit
+  ```
+</Accordion>
+
+---
+
+## Next Steps
+
+After configuring switches and DHCP pools:
+
+<CardGroup cols={2}>
+  <Card title="VLANs and Ports" icon="sitemap" href="/guides/vlans-ports">
+    Create VLANs and assign physical ports
+  </Card>
+  <Card title="Routing" icon="route" href="/guides/routing">
+    Configure static routes and OSPF
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+<Tip>
+  The UI implementation for these tabs is in:
+  - `ui/tabs_sw_dhcp.py` (lines 28-244)
+  - `core/connector.py` (SSH connection and L2/L3 detection)
+</Tip>
