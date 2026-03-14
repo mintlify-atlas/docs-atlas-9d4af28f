@@ -1,0 +1,105 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "SECURE-BRANCH-lac",
+  "projectDescription": "Infrastructure-as-Code (IaC) Python tool for automating Cisco switch configuration across multiple branch networks with security, QoS, VLANs, and GRE/IPsec tunneling",
+  "theme": "aspen",
+  "primaryColor": "#58a6ff",
+  "lightColor": "#3fb950",
+  "darkColor": "#f78166",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/layer2-vs-layer3",
+              "concepts/workflow"
+            ]
+          },
+          {
+            "group": "Configuration Guides",
+            "pages": [
+              "guides/switches-dhcp",
+              "guides/vlans-ports",
+              "guides/routing",
+              "guides/qos",
+              "guides/security",
+              "guides/gre-ipsec"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/execution",
+              "operations/backup",
+              "operations/aws-s3"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/command-generation",
+              "advanced/protections",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Modules",
+            "pages": [
+              "api/app",
+              "api/command-builder",
+              "api/connector",
+              "api/constants"
+            ]
+          },
+          {
+            "group": "UI Modules",
+            "pages": [
+              "api/ui-widgets",
+              "api/ui-tabs"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated multi-branch Cisco IOS configuration via SSH (Netmiko)",
+    "VLAN segmentation with DHCP pools and access control lists (ACLs)",
+    "Quality of Service (QoS) with MQC class-maps and policy-maps",
+    "GRE over IPsec tunneling with IKEv1 and ESP-AES-256 encryption",
+    "Device security hardening (enable secret, login block-for, banner MOTD)",
+    "AWS S3 backup integration with AES256 server-side encryption",
+    "Automatic Layer 2/Layer 3 detection with smart config generation",
+    "Protected uplink interface (GigabitEthernet0/0) to prevent lockout"
+  ],
+  "publicApiSurface": [
+    "SwitchConfiguratorV2 (main application class)",
+    "build_commands() - Generate IOS commands from configuration",
+    "build_cleanup_commands() - Generate cleanup commands safely",
+    "run_on_switch() - Execute configuration on a switch via SSH",
+    "test_connection() - Test SSH connectivity and detect L2/L3",
+    "fetch_running_config() - Download running-config from switch",
+    "make_device_params() - Create Netmiko connection parameters",
+    "detect_l3() - Detect if switch has ip routing enabled",
+    "expand_ports() - Normalize interface names to full IOS format",
+    "build_security_commands() - Generate security hardening commands",
+    "build_gre_ipsec_commands() - Generate GRE/IPsec tunnel config"
+  ]
+}
